@@ -19,10 +19,14 @@ function percentMatch(text, patterns) {
 export function parseQuota(text) {
   text = String(text).replace(/\r/g, '').replace(/\u00a0/g, ' ');
   const extraIndex = text.search(/Additional tokens|Extra tokens|额外(?:的)?(?:使用)?(?:额度|代币|令牌|词元|Token)|附加(?:额度|代币|令牌)/i);
-  const weeklyText = extraIndex < 0 ? text : text.slice(0, extraIndex);
   const extraText = extraIndex < 0 ? '' : text.slice(extraIndex);
-  if (!/weekly|每周|周额度|周用量|本周|周限制/i.test(weeklyText))
+  const weeklyIndex = text.search(/\bweekly\b|每周|周额度|周用量|本周|周限制/i);
+  if (weeklyIndex < 0)
     throw new ProbeError('PAGE_CHANGED', '没有找到周额度区块，请对照 Muse 设置中的用量页面。');
+  // Ignore percentages before the weekly heading and in subsequent quota sections.
+  const weeklySection = text.slice(weeklyIndex, extraIndex > weeklyIndex ? extraIndex : undefined);
+  const nextSection = weeklySection.search(/\n\s*(?:Daily\b|Monthly\b|Storage\b|每日|每天|日额度|日用量|每月|月额度|月用量|存储|储存)/i);
+  const weeklyText = nextSection < 0 ? weeklySection : weeklySection.slice(0, nextSection);
   let used = percentMatch(weeklyText, [
     /(?<![\d.,+\-])(\d+(?:\.\d+)?)\s*%\s*(?:used|已使用|已用|已消耗)/i,
     /(?:已使用|已用|已消耗|使用了|Used)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/i,

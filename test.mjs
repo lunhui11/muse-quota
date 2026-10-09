@@ -33,6 +33,15 @@ try {
   assert.equal(actualQuota.extra_expires,'never');
   assert.equal(parseQuota('每周限额将在 10月10日重置\n已使用 25%').extra_left,null);
   assert.equal(parseQuota('Weekly usage\n87.5% remaining').weekly_used_pct, 12.5);
+  assert.equal(parseQuota('Storage\n80% used\n'+english(25)).weekly_used_pct,25);
+  assert.equal(parseQuota('存储空间\n已使用 80%\n'+chinese).weekly_used_pct,73.5);
+  assert.equal(parseQuota('Storage\n20% remaining\nWeekly usage\n75% remaining').weekly_used_pct,25);
+  assert.equal(parseQuota('Weekly limit\n25% used\nStorage\n80% used').weekly_used_pct,25);
+  assert.equal(parseQuota('每周额度\n已使用 25%\n每月额度\n已使用 80%').weekly_used_pct,25);
+  assert.throws(()=>parseQuota('Storage\n80% used\nWeekly limit\n暂无数据'),e=>e.code==='PAGE_CHANGED');
+  assert.throws(()=>parseQuota('Weekly limit\n暂无数据\nStorage\n80% used'),e=>e.code==='PAGE_CHANGED');
+  assert.throws(()=>parseQuota('Weekly limit\n暂无数据\nDaily limit\n80% used'),e=>e.code==='PAGE_CHANGED');
+  assert.throws(()=>parseQuota('Weekly limit\n暂无数据 Additional tokens 80% used'),e=>e.code==='PAGE_CHANGED');
   for (const text of ['Free plan\nAdditional tokens\n0% used', 'Weekly limit\n101% used', 'Monthly limit\n25% used', '每周额度\n暂无数据','Weekly limit\n-1% used','Weekly limit\n1,000% used','Weekly limit\n100.5% used'])
     assert.throws(() => parseQuota(text), e => e.code === 'PAGE_CHANGED');
   assert.equal(proxyOptions({proxy_server:'socks5://localhost:1080'}).server, 'socks5://localhost:1080');
@@ -85,10 +94,12 @@ try {
   await new Promise(r=>service.server.listen(0,'127.0.0.1',r));
   const base='http://127.0.0.1:'+service.server.address().port;
   async function api(path,method='GET',body){
-    const response=await fetch(base+'/api/'+path,{method,headers:{Authorization:'Bearer '+service.token,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+    const response=await fetch(base+'/api/'+path,{method,headers:{'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
     return {status:response.status,data:await response.json()};
   }
-  assert.equal((await fetch(base+'/api/status')).status,401);
+  assert.equal((await fetch(base+'/api/status')).status,200);
+  assert.equal((await fetch(base+'/api/quotas')).status,200);
+  await assert.rejects(readFile(join(service.dataDir,'admin-token.txt')),e=>e.code==='ENOENT');
   assert.equal((await api('accounts','POST',null)).status,400);
   assert.equal((await api('accounts','POST',{label:'坏代理',proxy_server:'http://u:p@host:9'})).status,400);
   const accountA=(await api('accounts','POST',{label:'账号 A'})).data;
@@ -108,7 +119,7 @@ try {
   const payload=Buffer.from(JSON.stringify({notes:splitNotes}));
   const splitAt=payload.indexOf(Buffer.from('分'))+1;
   const splitResult=await new Promise((resolve,reject)=>{
-    const req=request(base+'/api/accounts/'+accountA.id,{method:'PATCH',headers:{Authorization:'Bearer '+service.token,'Content-Type':'application/json'}},res=>{
+    const req=request(base+'/api/accounts/'+accountA.id,{method:'PATCH',headers:{'Content-Type':'application/json'}},res=>{
       const parts=[];res.on('data',part=>parts.push(part));res.on('end',()=>resolve({status:res.statusCode,data:JSON.parse(Buffer.concat(parts).toString())}));
     });
     req.on('error',reject);req.write(payload.subarray(0,splitAt));setTimeout(()=>req.end(payload.subarray(splitAt)),30);
@@ -137,10 +148,12 @@ try {
   browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL || (process.platform==='win32'?'chrome':undefined),headless:true});
   const page=await browser.newPage({viewport:{width:1280,height:900}});
   const pageErrors=[];page.on('pageerror',e=>pageErrors.push(e.message));
+  const apiAuthorizations=[];
+  page.on('request',req=>{if(new URL(req.url()).pathname.startsWith('/api/'))apiAuthorizations.push(req.headers().authorization);});
   await page.goto(base);
-  await page.getByLabel('访问密钥').fill(service.token);
-  await page.getByRole('button',{name:'连接',exact:true}).click();
   await page.getByRole('heading',{name:'账号 A',exact:true}).waitFor();
+  assert.equal(await page.getByLabel('访问密钥').count(),0);
+  assert.equal(await page.getByRole('button',{name:'退出面板',exact:true}).count(),0);
   const card=page.locator('.card').filter({has:page.getByRole('heading',{name:'账号 A',exact:true})});
   await card.getByRole('button',{name:'编辑',exact:true}).click();
   await page.getByLabel('账号名称',{exact:true}).last().fill('日常任务 A');
@@ -160,19 +173,40 @@ try {
   await page.screenshot({path:join(workDir,'muse-dashboard-mobile-test.png'),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(pageErrors,[]);
-  let releaseStatus,seenStatus;
-  const pendingStatusGate=new Promise(resolve=>{releaseStatus=resolve;});
-  const statusSeen=new Promise(resolve=>{seenStatus=resolve;});
-  await page.route('**/api/status',async route=>{
-    const response=await route.fetch();seenStatus();await pendingStatusGate;await route.fulfill({response});
-  });
-  const pendingUpdate=page.evaluate(()=>update().catch(()=>{}));
-  await statusSeen;
-  await page.getByRole('button',{name:'退出面板',exact:true}).click();
-  releaseStatus();await pendingUpdate;
-  assert.equal(await page.locator('#auth').isVisible(),true);
-  assert.equal(await page.locator('#dashboard').isVisible(),false);
-  assert.equal(await page.locator('#cards').textContent(),'');
+  // Hold an old response until a newer refresh has rendered; no timing assumptions.
+  for (const oldStatus of [200,401,500]) {
+    let releaseOld,oldSeen;
+    const oldGate=new Promise(resolve=>{releaseOld=resolve;});
+    const oldStarted=new Promise(resolve=>{oldSeen=resolve;});
+    let statusRequests=0;
+    await page.route('**/api/status',async route=>{
+      const isOld=++statusRequests===1;
+      const response=await route.fetch();
+      const json=await response.json();
+      if(isOld){oldSeen();await oldGate;}
+      if(isOld&&oldStatus!==200){await route.fulfill({status:oldStatus,json:{error:'旧请求失败'}});return;}
+      json.accounts.find(a=>a.id===accountA.id).label=isOld?'旧状态':'新状态';
+      await route.fulfill({response,json});
+    });
+    const oldUpdate=page.evaluate(()=>update().catch(()=>{}));
+    await oldStarted;
+    try {
+      await page.evaluate(()=>update());
+      assert.equal(await page.locator('#cards h2').first().textContent(),'新状态');
+    } finally {releaseOld();await oldUpdate;}
+    assert.equal(await page.locator('#cards h2').first().textContent(),'新状态');
+    assert.equal(await page.locator('#dashboard').isVisible(),true);
+    assert.equal(await page.evaluate(()=>accounts[0].label),'新状态');
+    await page.unroute('**/api/status');
+  }
+  await page.evaluate(()=>update());
+  console.log('PASS 并发刷新乱序响应及旧请求失败不会覆盖新状态');
+  await page.reload();
+  await page.getByRole('heading',{name:'日常任务 A',exact:true}).waitFor();
+  assert.equal(await page.locator('#dashboard').isVisible(),true);
+  assert.ok(apiAuthorizations.length>0);
+  assert.ok(apiAuthorizations.every(value=>value===undefined));
+  assert.deepEqual(pageErrors,[]);
   await browser.close();browser=null;
 
   fail=true;
@@ -189,7 +223,7 @@ try {
   assert.equal(disk.snapshots[accountA.id].quota.weekly_used_pct,12.5);
   assert.equal(disk.accounts.find(a=>a.id===accountA.id).label,'日常任务 A');
   assert.equal(disk.accounts.find(a=>a.id===accountA.id).notes,'已绑定网盘\n<script>window.injected=true</script>');
-  console.log('PASS HTTP 鉴权、保存失败回滚、分段中文请求、名称备注编辑与持久化、退出时并发刷新、账号输入、登录检测互斥、串行队列、重复检测、失败缓存和桌面/手机页面');
+  console.log('PASS HTTP 无密钥访问、保存失败回滚、分段中文请求、名称备注编辑与持久化、页面自动加载与重载、账号输入、登录检测互斥、串行队列、重复检测、失败缓存和桌面/手机页面');
   console.log('以上为本地模拟验证；未登录真实 Muse 账号，不代表真实账号或 Docker 已验证。');
 } finally {
   releaseProbe?.();

@@ -1,4 +1,4 @@
-﻿param([switch]$NoBrowser, [switch]$NoClipboard)
+﻿param([switch]$NoBrowser)
 $ErrorActionPreference = 'Stop'
 Set-Location -LiteralPath $PSScriptRoot
 $nodeCommand = Get-Command node.exe -ErrorAction SilentlyContinue
@@ -25,11 +25,6 @@ if (-not $running) {
   }
   if (-not $running) { throw '服务未就绪，请检查端口是否已被占用。' }
   Set-Content -LiteralPath (Join-Path $info.data_dir 'service.pid') -Value $process.Id -Encoding ASCII
-}
-if (-not $NoClipboard) {
-  $taskKey = (Get-Content -LiteralPath (Join-Path $info.data_dir 'admin-token.txt') -Raw).Trim()
-  Set-Clipboard -Value $taskKey
-  Write-Output '访问密钥已复制到剪贴板，请在面板里粘贴。'
 }
 Write-Output ('Muse 额度探针：' + $taskUrl)
 if (-not $NoBrowser) { Start-Process $taskUrl }

@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { readFile, writeFile, mkdir, rename, access } from 'node:fs/promises';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
@@ -40,20 +40,12 @@ export async function createService(options = {}) {
       !Number.isFinite(threshold) || threshold < 0 || threshold > 100)
     throw new Error('刷新间隔应为 1–1440 分钟，阈值应为 0–100。');
   await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  const statePath = join(dataDir, 'state.json'), tokenPath = join(dataDir, 'admin-token.txt');
+  const statePath = join(dataDir, 'state.json');
   let state;
   try { state = JSON.parse(await readFile(statePath, 'utf8')); }
   catch (e) { if (e.code === 'ENOENT') state = { accounts: [], snapshots: {} }; else throw new Error('账号数据文件损坏，请检查备份。'); }
   if (!Array.isArray(state.accounts) || !state.snapshots || state.accounts.some(a => !ID.test(a.id)))
     throw new Error('账号数据格式无效。');
-  let token;
-  try { token = (await readFile(tokenPath, 'utf8')).trim(); }
-  catch (e) {
-    if (e.code !== 'ENOENT') throw e;
-    token = randomBytes(32).toString('hex');
-    await writeFile(tokenPath, token + '\n', { mode: 0o600, flag: 'wx' });
-  }
-  if (token.length < 32) throw new Error('访问密钥文件无效。');
   let saving = Promise.resolve();
   function save(change = () => () => {}) {
     saving = saving.catch(() => {}).then(async () => {
@@ -119,11 +111,6 @@ export async function createService(options = {}) {
     for (const a of state.accounts) enqueue(a);
   }, intervalMinutes * 60000);
   timer?.unref();
-  function authenticated(req) {
-    const supplied = req.headers.authorization?.replace(/^Bearer /i, '') || '';
-    const a = Buffer.from(supplied), b = Buffer.from(token);
-    return a.length === b.length && timingSafeEqual(a, b);
-  }
   function respond(res, status, data) {
     res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
     res.end(JSON.stringify(data));
@@ -154,7 +141,6 @@ export async function createService(options = {}) {
         respond(res, 200, { service: 'muse-quota-probe', status: stopped ? 'stopping' : 'ready' }); return;
       }
       if (!url.pathname.startsWith('/api/')) { respond(res, 404, { error: '路径不存在。' }); return; }
-      if (!authenticated(req)) { respond(res, 401, { error: '请填写访问密钥。' }); return; }
       if (req.method === 'GET' && ['/api/status', '/api/quotas'].includes(url.pathname)) {
         respond(res, 200, {
           interval_minutes: intervalMinutes, pause_at_percent: threshold,
@@ -256,7 +242,7 @@ export async function createService(options = {}) {
     }
   });
   return {
-    server, token, dataDir,
+    server, dataDir,
     async stop() {
       stopped = true; if (timer) clearInterval(timer);
       await closeAllBrowsers();
@@ -274,7 +260,6 @@ async function main() {
     console.log(JSON.stringify({url:'http://' + displayHost + ':' + port,data_dir:service.dataDir}));
     await service.stop(); return;
   }
-  if (process.argv[2] === 'token') { console.log(service.token); await service.stop(); return; }
   if (process.argv[2] === 'login') {
     const state = JSON.parse(await readFile(join(service.dataDir, 'state.json'), 'utf8'));
     const a = state.accounts.find(a => a.id === process.argv[3]);
@@ -291,7 +276,6 @@ async function main() {
   service.server.on('error', async () => { console.error('服务无法启动，请检查端口和监听地址。'); await service.stop(); process.exitCode = 1; });
   service.server.listen(port, host, () => {
     console.log('Muse 额度探针已启动，端口 ' + port + '。');
-    console.log('访问密钥保存在数据目录中的 admin-token.txt，不会写入 URL 或日志。');
   });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => { await service.stop(); process.exit(0); });
 }
