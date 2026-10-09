@@ -37,6 +37,22 @@ export class DriveStore {
     const folder=await r.json();
     if(folder.mimeType!=='application/vnd.google-apps.folder'||!folder.capabilities?.canAddChildren)throw new Error('该网盘目录不存在或没有写入权限。');
   }
+  async get(file) {
+    if (!file || typeof file.id !== 'string' || !file.id || !/^[a-f0-9]{64}$/.test(file.sha256 || ''))
+      throw new Error('网盘文件引用或校验值无效。');
+    const response = await this.api('/drive/v3/files/'+encodeURIComponent(file.id)+'?alt=media&supportsAllDrives=true');
+    const chunks=[];let size=0;
+    for await (const chunk of response.body) {
+      size+=chunk.length;
+      if(size>2097152){await response.body.cancel().catch(()=>{});throw new Error('网盘交接文件超过 2 MiB，停止读取。');}
+      chunks.push(Buffer.from(chunk));
+    }
+    const content=Buffer.concat(chunks);
+    if(createHash('sha256').update(content).digest('hex')!==file.sha256)
+      throw new Error('网盘文件内容已变化或下载不完整，请核对交接版本。');
+    try{return JSON.parse(content.toString('utf8'));}
+    catch{throw new Error('网盘文件不是有效的 JSON 交接资料。');}
+  }
   async put(folder, key, content) {
     await this.checkFolder(folder);
     const hash=createHash('sha256').update(content).digest('hex');

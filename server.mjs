@@ -6,6 +6,9 @@ import { fileURLToPath } from 'node:url';
 import { loadEnvFile } from 'node:process';
 import { probeAccount, launchAccount, proxyOptions, publicError, closeAllBrowsers } from './probe.mjs';
 import { createPool } from './pool.mjs';
+import { DriveStore } from './drive.mjs';
+import { createExecutor } from './executor.mjs';
+import { createMuseAdapter } from './muse.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 try { await access(join(ROOT, '.env')); loadEnvFile(join(ROOT, '.env')); } catch (e) {
@@ -67,13 +70,31 @@ export async function createService(options = {}) {
   const jobs = new Map(), logins = new Map();
   let tail = Promise.resolve(), stopped = false;
   const profile = a => join(dataDir, 'profiles', a.id);
+  const drive = options.drive || new DriveStore();
   const pool = await createPool({
-    dataDir, drive: options.drive,
+    dataDir, drive,
     syncHour: Number(process.env.DAILY_SYNC_HOUR ?? 8),
     accounts: () => state.accounts.map(a => {
       const view = quotaView(a, state.snapshots[a.id], { intervalMinutes, threshold, busy: jobs.has(a.id) || logins.has(a.id) });
       return { ...publicAccount(a), ...view, pause_at_percent: threshold, quota_usable: a.enabled && !view.stale };
     }),
+  });
+  async function recordQuota(id,data) {
+    pool.validateWorker(id,data);
+    if(typeof data.weekly_used_pct!=='number'||!Number.isFinite(data.weekly_used_pct)||data.weekly_used_pct<0||data.weekly_used_pct>100)
+      throw Object.assign(new Error('周用量必须是 0–100 的数字。'),{status:400});
+    await pool.recordQuota(id,data,()=>save(()=>{
+      const previous=state.snapshots[data.account_id],checkedAt=new Date().toISOString();
+      state.snapshots[data.account_id]={quota:{...(previous?.quota||{}),weekly_used_pct:data.weekly_used_pct,weekly_remaining_pct:Math.round((100-data.weekly_used_pct)*100)/100},status:'success',checked_at:checkedAt,last_success_at:checkedAt,error:null};
+      return ()=>{if(previous)state.snapshots[data.account_id]=previous;else delete state.snapshots[data.account_id];};
+    }));
+  }
+  const timeoutSeconds=Number(options.executorTimeoutSeconds??process.env.EXECUTOR_TIMEOUT_SECONDS??300);
+  if(!Number.isFinite(timeoutSeconds)||timeoutSeconds<5||timeoutSeconds>1800)throw new Error('EXECUTOR_TIMEOUT_SECONDS 需要 5–1800 秒。');
+  const executor=await createExecutor({
+    dataDir,pool,drive,account:id=>findAccount(id),profile:id=>profile(findAccount(id)),recordQuota,
+    adapter:options.adapter||createMuseAdapter({headless:process.env.EXECUTOR_HEADLESS!=='0',timeoutMs:timeoutSeconds*1000}),
+    scheduler:options.scheduler!==false,maxSteps:Number(options.executorMaxSteps??process.env.EXECUTOR_MAX_STEPS??20),
   });
   const poolTimer = options.scheduler === false ? null : setInterval(() => {
     void pool.tick().catch(() => console.error('账号池状态保存失败，请检查数据目录。'));
@@ -86,7 +107,7 @@ export async function createService(options = {}) {
     return a;
   }
   function enqueue(a) {
-    if (!a.enabled || jobs.has(a.id) || logins.has(a.id) || stopped || pool.usingProfile(a.id)) return false;
+    if (!a.enabled || jobs.has(a.id) || logins.has(a.id) || stopped || pool.usingProfile(a.id) || executor.usingProfile(a.id)) return false;
     jobs.set(a.id, 'queued');
     tail = tail.catch(() => {}).then(async () => {
       if (stopped || !a.enabled) { jobs.delete(a.id); return; }
@@ -154,8 +175,16 @@ export async function createService(options = {}) {
         respond(res, 200, { service: 'muse-quota-probe', status: stopped ? 'stopping' : 'ready' }); return;
       }
       if (!url.pathname.startsWith('/api/')) { respond(res, 404, { error: '路径不存在。' }); return; }
+      if(url.pathname==='/api/executor'&&req.method==='GET'){respond(res,200,executor.view());return;}
+      const report=url.pathname.match(/^\/api\/executor\/tasks\/([a-f0-9]{12})$/);
+      if(report&&req.method==='GET'){respond(res,200,await executor.report(report[1]));return;}
+      if(req.method==='POST'&&['/api/executor/start','/api/executor/pause'].includes(url.pathname)){
+        await body(req);respond(res,200,url.pathname.endsWith('/start')?executor.start():executor.pause());return;
+      }
       if (url.pathname.startsWith('/api/pool')) {
-        if (req.method === 'GET' && url.pathname === '/api/pool') { respond(res, 200, pool.view()); return; }
+        if (req.method === 'GET' && url.pathname === '/api/pool') { respond(res, 200, {...pool.view(),executor:executor.view(),capabilities:{task_request_id:true,task_lookup:true}}); return; }
+        const lookup=url.pathname.match(/^\/api\/pool\/tasks\/([a-f0-9]{12})$/);
+        if(lookup&&req.method==='GET'){respond(res,200,pool.getTask(lookup[1]));return;}
         if (req.method !== 'POST') { respond(res, 405, { error: '请求方法不支持。' }); return; }
         const data = await body(req, 262144);
         if (url.pathname === '/api/pool/documents') { respond(res, 201, await pool.addDocument(data)); return; }
@@ -164,18 +193,11 @@ export async function createService(options = {}) {
         if (url.pathname === '/api/pool/tick') { await pool.tick(); respond(res, 200, pool.view()); return; }
         const folder = url.pathname.match(/^\/api\/pool\/accounts\/([a-f0-9]{12})\/folder$/);
         if (folder) { respond(res, 200, await pool.bind(folder[1], data.folder_id)); return; }
-        const operation = url.pathname.match(/^\/api\/pool\/tasks\/([a-f0-9]{12})\/(claim|checkpoint|quota|cancel)$/);
+        const operation = url.pathname.match(/^\/api\/pool\/tasks\/([a-f0-9]{12})\/(claim|checkpoint|quota|cancel|resume)$/);
         if (operation) {
           const [, id, action] = operation;
           if (action === 'quota') {
-            pool.validateWorker(id, data);
-            if (typeof data.weekly_used_pct !== 'number' || !Number.isFinite(data.weekly_used_pct) || data.weekly_used_pct < 0 || data.weekly_used_pct > 100)
-              throw Object.assign(new Error('周用量必须是 0–100 的数字。'), { status: 400 });
-            await pool.recordQuota(id, data, () => save(() => {
-              const previous = state.snapshots[data.account_id], checkedAt = new Date().toISOString();
-              state.snapshots[data.account_id] = { quota: { ...(previous?.quota || {}), weekly_used_pct: data.weekly_used_pct, weekly_remaining_pct: Math.round((100-data.weekly_used_pct)*100)/100 }, status: 'success', checked_at: checkedAt, last_success_at: checkedAt, error: null };
-              return () => { if (previous) state.snapshots[data.account_id] = previous; else delete state.snapshots[data.account_id]; };
-            }));
+            await recordQuota(id,data);
             respond(res, 200, pool.view()); return;
           }
           respond(res, 200, await pool[action](id, data)); return;
@@ -188,9 +210,9 @@ export async function createService(options = {}) {
           login_available: process.env.ALLOW_LOGIN !== '0',
           accounts: state.accounts.map(a => ({
             ...publicAccount(a),
-            pool_busy: pool.usingProfile(a.id),
+            pool_busy: pool.usingProfile(a.id) || executor.usingProfile(a.id),
             login_open: logins.has(a.id), job: jobs.get(a.id) || null,
-            ...quotaView(a, state.snapshots[a.id], { intervalMinutes, threshold, busy: logins.has(a.id) || jobs.has(a.id) || pool.usingProfile(a.id) }),
+            ...quotaView(a, state.snapshots[a.id], { intervalMinutes, threshold, busy: logins.has(a.id) || jobs.has(a.id) || pool.usingProfile(a.id) || executor.usingProfile(a.id) }),
           })),
         }); return;
       }
@@ -222,7 +244,7 @@ export async function createService(options = {}) {
       const a = findAccount(match[1]), action = match[2];
       if (req.method === 'PATCH' && !action) {
         const data = await body(req);
-        if (jobs.has(a.id) || logins.has(a.id) || pool.usingProfile(a.id)) throw Object.assign(new Error('账号正在操作，请稍后修改。'), { status: 409 });
+        if (jobs.has(a.id) || logins.has(a.id) || pool.usingProfile(a.id) || executor.usingProfile(a.id)) throw Object.assign(new Error('账号正在操作，请稍后修改。'), { status: 409 });
         const keys = Object.keys(data);
         if (!keys.length || keys.some(key => !['enabled', 'label', 'notes'].includes(key)))
           throw Object.assign(new Error('仅支持修改名称、备注和启用状态。'), { status: 400 });
@@ -233,7 +255,7 @@ export async function createService(options = {}) {
         if ('notes' in data && (typeof data.notes !== 'string' || data.notes.length > 1000))
           throw Object.assign(new Error('备注最多 1000 个字符。'), { status: 400 });
         await save(() => {
-          if (jobs.has(a.id) || logins.has(a.id) || pool.usingProfile(a.id)) throw Object.assign(new Error('账号正在操作，请稍后修改。'), { status: 409 });
+          if (jobs.has(a.id) || logins.has(a.id) || pool.usingProfile(a.id) || executor.usingProfile(a.id)) throw Object.assign(new Error('账号正在操作，请稍后修改。'), { status: 409 });
           const previous = { ...a };
           if ('enabled' in data) a.enabled = data.enabled;
           if ('label' in data) a.label = data.label.trim();
@@ -253,7 +275,7 @@ export async function createService(options = {}) {
       if (action === 'login') {
         if (process.env.ALLOW_LOGIN === '0')
           throw Object.assign(new Error('云端请先通过服务器图形会话执行登录命令，详见 README。'), { status: 409 });
-        if (!a.enabled || jobs.has(a.id) || logins.has(a.id) || pool.usingProfile(a.id))
+        if (!a.enabled || jobs.has(a.id) || logins.has(a.id) || pool.usingProfile(a.id) || executor.usingProfile(a.id))
           throw Object.assign(new Error('账号已停用或正在操作。'), { status: 409 });
         logins.set(a.id, null);
         try {
@@ -284,10 +306,11 @@ export async function createService(options = {}) {
     }
   });
   return {
-    server, dataDir, pool,
+    server, dataDir, pool, executor,
     async stop() {
       stopped = true; if (timer) clearInterval(timer);
       if (poolTimer) clearInterval(poolTimer);
+      await executor.stop();
       await pool.stop();
       await closeAllBrowsers();
       await tail.catch(() => {}); await saving.catch(() => {});

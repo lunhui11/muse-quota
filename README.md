@@ -2,7 +2,7 @@
 
 独立浏览器会话读取 muse.ai 的周用量百分比、重置日期、套餐和额外额度。支持手动/定时检测及每个账号的固定代理。
 
-支持额度探测和账号池任务交接：每个账号绑定网盘目录，每日同步文本资料，额度接近阈值时请求执行程序暂停，上传并校验进度后分配给下一账号。账号注册、Muse 内的网盘连接由你手动完成；聊天与业务任务通过执行程序协议接入。
+支持额度探测和账号池任务交接：每个账号绑定网盘目录，每日同步文本资料，额度接近阈值时保存进度，上传并校验后分配给下一账号。内置 Muse 网页执行器可在面板启动，下载网盘资料、分步发送任务并自动续做；外部执行程序协议仍可使用。账号注册、登录和 Google 授权由你手动完成。
 
 使用步骤、Google 授权、任务领取及续做协议见 [账号池使用说明](docs/account-pool.md)。
 
@@ -51,6 +51,9 @@ node server.mjs
 - BROWSER_CHANNEL：Windows 默认 chrome；Linux 默认 Playwright Chromium。
 - HOST/PORT：本地默认 127.0.0.1:8788。
 - ALLOW_LOGIN：设为 0 时禁止从面板打开交互式浏览器。
+- EXECUTOR_HEADLESS：默认 1，设为 0 时显示 Muse 执行浏览器。
+- EXECUTOR_TIMEOUT_SECONDS：默认 300，每次回复等待上限。
+- EXECUTOR_MAX_STEPS：默认 20，每次领取的执行步骤上限；达到后保存进度等待人工检查。
 
 账号数据和浏览器会话保存在 data 目录。该目录和 .env 被排除在 Git 与 Docker 镜像之外。迁移或升级前保存该目录，不能同时让两份服务写同一目录。
 
@@ -148,7 +151,7 @@ npm test
 
 测试使用两个真实的临时浏览器配置，通过拦截所有网络请求提供本地模拟 Muse 页面。覆盖中英文和小数解析、Cookie 隔离、无密钥访问、代理配置、队列、失败缓存及桌面/手机页面，不访问真实 Muse、不消耗账号额度。
 
-已完成本地模拟验证，并用当前已登录的真实账号核验中文用量页面：周用量、重置日期、额外剩余词元、额外用量及永不过期状态均可读取。新增名称和备注编辑通过界面、输入校验和数据持久化检查。其他账号仍需登录后对照官网；开发机器没有 Docker，所以没有执行镜像构建或容器运行验证。用量页面的菜单或标签变化可能导致 PAGE_CHANGED，此时保留旧读数并显示错误。
+当前改动已完成本地模拟验证。此前项目记录过真实中文用量页面的人工核验；本轮云环境未完成真实 Muse 登录、Google Drive OAuth 和自动执行联调，不应将历史用量核验视为当前执行器已通过验收。新增名称和备注编辑通过界面、输入校验和数据持久化检查。其他账号仍需登录后对照官网；开发机器没有 Docker，所以没有执行镜像构建或容器运行验证。用量页面的菜单或标签变化可能导致 PAGE_CHANGED，此时保留旧读数并显示错误。
 
 参考资料：
 - https://github.com/czg86389-hub/muse2api
@@ -156,3 +159,11 @@ npm test
 - https://playwright.dev/docs/api/class-browsertype#browser-type-launch-persistent-context
 - https://playwright.dev/docs/network
 - https://playwright.dev/docs/docker
+
+内置自动执行的首次配置、暂停恢复及限制见 [账号池使用说明](docs/account-pool.md)。先以小型文本任务验证网盘和 Muse 回复，再运行需要切号的任务。微信桥接复用 wechat-muse-bridge，默认通过现成适配层直接接入账号池；Side Chat 模式可选 Gadget。最终部署步骤见 [给 Muse 的接手任务](docs/MUSE_HANDOFF.md)，当前没有生成真实登录二维码或完成微信收发测试。
+
+## 微信与 Muse 接手部署
+
+已提供可运行的 [微信适配框架](integrations/wechat/README.md)：默认任务模式直接调用现有账号池，普通聊天模式可选 Gadget。支持微信接单、幂等创建、查询/取消、成果回传、持久状态与预检。请从 GitHub 拉取本次更新后的最新源码；[给 Muse 的最终接手任务](docs/MUSE_HANDOFF.md) 包含部署、真实授权和端到端验收要求。
+
+交接源码可用 `python3 scripts/build_handoff.py` 打包，默认保存在被忽略的 work/，不会带上账号会话或凭据。微信桥接是独立 Python 可选组件，不增加原 Node 启动的依赖。真实扫码和 Muse/Drive 联调仍由实际部署设备完成。

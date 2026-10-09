@@ -5,6 +5,17 @@ import { DriveStore } from './drive.mjs';
 
 const error = (message,status=400)=>Object.assign(new Error(message),{status});
 const text = (value,name,max=10000)=>{if(typeof value!=='string'||!value.trim()||value.length>max)throw error(`${name}需要 1–${max} 个字符。`);return value.trim();};
+function snapshot(data,now) {
+  const summary=text(data.summary,'进度摘要');
+  const nextSteps=data.completed===true?'':text(data.next_steps,'续做指令');
+  let artifacts=[];
+  if(data.artifacts!==undefined){
+    if(!Array.isArray(data.artifacts)||data.artifacts.length>10)throw error('工作成果最多包含 10 个文本文件。');
+    artifacts=data.artifacts.map(file=>({name:text(file?.name,'成果文件名',120),content:text(file?.content,'成果内容',20000)}));
+    if(new Set(artifacts.map(f=>f.name)).size!==artifacts.length)throw error('成果文件名不能重复。');
+  }
+  return {summary,next_steps:nextSteps,artifacts,updated_at:now().toISOString()};
+}
 export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()=>new Date(),syncHour=8}) {
   if(!Number.isInteger(syncHour)||syncHour<0||syncHour>23)throw error('DAILY_SYNC_HOUR 需要 0–23 的整数。');
   const path=join(dataDir,'pool-state.json');
@@ -98,10 +109,11 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
   for(const t of state.tasks){if(t.status==='running'){t.status='pause_requested';t.error='服务已重启，请暂停并重新提交进度。';}}
   return {
     view,
+    getTask:id=>structuredClone(task(id)),
     usingProfile: id=>state.tasks.some(t=>t.account_id===id&&['running','pause_requested'].includes(t.status)),
     validateWorker(id,data){const t=task(id);if(!['running','pause_requested'].includes(t.status)||t.account_id!==data.account_id||t.revision!==data.revision)throw error('旧账号或旧版本不能更新任务。',409);},
     async recordQuota(id,data,apply){return serial(async()=>{this.validateWorker(id,data);await apply();await cycle();});},
-    async cancel(id){return serial(()=>change(()=>{const t=task(id);if(t.status==='completed')throw error('已完成的任务不能取消。',409);if(['running','pause_requested'].includes(t.status))throw error('请先让执行程序暂停并提交进度，再取消任务。',409);t.status='cancelled';t.error=null;return t;}));},
+    async cancel(id){return serial(()=>change(()=>{const t=task(id);if(t.status==='completed')throw error('已完成的任务不能取消。',409);if(['running','pause_requested'].includes(t.status)||(t.status==='needs_attention'&&t.uncertain))throw error('请先确认 Muse 已停止，并通过恢复任务提交进度。',409);t.status='cancelled';t.error=null;return t;}));},
     async bind(id,folder){return serial(()=>change(async()=>{
       if(!accounts().some(a=>a.id===id))throw error('账号不存在。',404);
       if(state.tasks.some(t=>active(t)&&(t.account_id===id||t.target_account_id===id)))throw error('该账号有未结束的任务，暂时不能更改网盘目录。',409);
@@ -112,24 +124,46 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
       state.folders[id]=value;return {folder_id:value,verified:!!drive.configured()};
     }));},
     async addDocument(data){return serial(()=>change(()=>{const d={id:randomBytes(6).toString('hex'),title:text(data.title,'资料标题',120),content:text(data.content,'资料内容'),updated_at:now().toISOString(),files:{}};state.documents.push(d);state.last_sync_date=null;return d;}));},
-    async addTask(data){return serial(()=>change(()=>{const t={id:randomBytes(6).toString('hex'),prompt:text(data.prompt,'任务说明'),status:'queued',account_id:null,revision:0,checkpoint:null,history:[],created_at:now().toISOString(),error:null};state.tasks.push(t);return t;}));},
+    async addTask(data){return serial(async()=>{
+      const prompt=text(data.prompt,'任务说明');
+      const requestId=data.request_id;
+      if(requestId!==undefined&&(typeof requestId!=='string'||!/^[A-Za-z0-9._:-]{1,128}$/.test(requestId)))throw error('request_id 需要 1–128 个字母、数字或 . _ : - 字符。');
+      if(requestId!==undefined){
+        const existing=state.tasks.find(t=>t.request_id===requestId);
+        if(existing){if(existing.prompt!==prompt)throw error('同一个 request_id 不能用于不同任务。',409);return structuredClone(existing);}
+      }
+      return change(()=>{const t={id:randomBytes(6).toString('hex'),prompt,status:'queued',account_id:null,revision:0,checkpoint:null,history:[],created_at:now().toISOString(),error:null};
+      if(requestId!==undefined)t.request_id=requestId;
+      state.tasks.push(t);return t;});
+    });},
     async claim(id,data){return serial(()=>change(()=>{
       const t=task(id);if(t.status!=='ready'||t.account_id!==data.account_id||t.revision!==data.revision)throw error('任务归属或版本已变化，请重新读取任务。',409);
       const a=accounts().find(a=>a.id===t.account_id);if(!a?.eligible_for_new_requests)throw error('账号额度不确定或正在操作，暂时不能执行任务。',409);
-      t.status='running';return t;
+      t.status='running';if(data.executor==='builtin')t.executor='builtin';else delete t.executor;delete t.uncertain;return t;
     }));},
     async checkpoint(id,data){return serial(async()=>{
       const t=task(id);if(!['running','pause_requested'].includes(t.status)||t.account_id!==data.account_id||t.revision!==data.revision)throw error('旧账号或旧版本不能更新任务。',409);
       if(data.paused!==true&&data.completed!==true)throw error('提交进度前必须确认任务已暂停或已完成。');
-      const summary=text(data.summary,'进度摘要');const nextSteps=data.completed===true?'':text(data.next_steps,'续做指令');
-      let artifacts=[];
-      if(data.artifacts!==undefined){
-        if(!Array.isArray(data.artifacts)||data.artifacts.length>10)throw error('工作成果最多包含 10 个文本文件。');
-        artifacts=data.artifacts.map(file=>({name:text(file?.name,'成果文件名',120),content:text(file?.content,'成果内容',20000)}));
-      }
-      await change(()=>{t.checkpoint={summary,next_steps:nextSteps,artifacts,updated_at:now().toISOString()};t.status=data.completed===true?'finalizing':'checkpoint_pending';t.error=null;});
+      const checkpoint=snapshot(data,now);
+      await change(()=>{t.checkpoint=checkpoint;t.status=data.completed===true?'finalizing':'checkpoint_pending';t.error=null;});
       if(t.status==='checkpoint_pending')await backupCheckpoint(t);
       if(t.status==='queued')await assign(t,t.account_id);else if(t.status==='finalizing')await finalize(t);
+      return structuredClone(t);
+    });},
+    // These operations share the same ownership checks as external workers.
+    async progress(id,data){return serial(()=>change(()=>{
+      this.validateWorker(id,data);const t=task(id);t.checkpoint=snapshot(data,now);return t;
+    }));},
+    async hold(id,data){return serial(()=>change(()=>{
+      this.validateWorker(id,data);const t=task(id);
+      t.status='needs_attention';t.error=text(data.reason,'暂停原因',500);t.uncertain=data.uncertain!==false;return t;
+    }));},
+    async resume(id,data){return serial(async()=>{
+      const t=task(id);if(t.status!=='needs_attention')throw error('只有等待人工检查的任务可以恢复。',409);
+      if(data.paused!==true)throw error('请先在 Muse 中确认任务已经停止。',409);
+      const checkpoint=snapshot({...data,artifacts:data.artifacts??t.checkpoint?.artifacts},now);
+      await change(()=>{t.checkpoint=checkpoint;t.status=data.completed===true?'finalizing':'checkpoint_pending';t.error=null;delete t.uncertain;});
+      if(t.status==='finalizing')await finalize(t);else{await backupCheckpoint(t);if(t.status==='queued')await assign(t,t.account_id);}
       return structuredClone(t);
     });},
     async sync(){return serial(async()=>{try{await syncDocuments();state.last_sync_date=now().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});state.sync_error=null;await save();return view();}catch(e){state.sync_error=e.message;await save();throw error(e.message,409);}});},

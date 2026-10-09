@@ -90,3 +90,22 @@ test('并发领取只授予一个执行程序',async t=>{
   assert.equal(claims.filter(r=>r.status==='fulfilled').length,1);
   assert.equal(claims.find(r=>r.status==='rejected').reason.status,409);
 });
+
+test('任务幂等键在并发、状态变化和重启后仍返回原任务',async t=>{
+  const f=await fixture(t);const data={prompt:'微信只创建一次的任务',request_id:'wechat:fixture-1'};
+  const results=await Promise.all([f.pool.addTask(data),f.pool.addTask(data)]);
+  assert.equal(results[0].id,results[1].id);assert.equal(f.pool.view().tasks.length,1);
+  await f.pool.tick();await f.pool.cancel(results[0].id);
+  const repeated=await f.pool.addTask(data);assert.equal(repeated.status,'cancelled');
+  const reloaded=await createPool({dataDir:f.dataDir,accounts:()=>f.accounts,drive:{configured:()=>false}});
+  assert.equal((await reloaded.addTask(data)).id,repeated.id);assert.equal(reloaded.view().tasks.length,1);
+  await assert.rejects(reloaded.addTask({...data,prompt:'同键不同任务'}),e=>e.status===409);
+});
+
+test('拒绝非法幂等键，保存失败不会留下未确认的键或任务',async t=>{
+  const f=await fixture(t);await assert.rejects(f.pool.addTask({prompt:'任务',request_id:'bad key'}),e=>e.status===400);
+  const blocked=join(f.dataDir,'pool-state.json.tmp');await mkdir(blocked);
+  await assert.rejects(f.pool.addTask({prompt:'任务',request_id:'wechat:retry'}));assert.equal(f.pool.view().tasks.length,0);
+  await rmdir(blocked);const retry=await f.pool.addTask({prompt:'任务',request_id:'wechat:retry'});assert.equal(f.pool.getTask(retry.id).request_id,'wechat:retry');
+  assert.throws(()=>f.pool.getTask('000000000000'),e=>e.status===404);
+});

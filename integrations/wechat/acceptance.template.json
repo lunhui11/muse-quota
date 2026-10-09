@@ -1,0 +1,21 @@
+{
+  "timezone": "Asia/Shanghai",
+  "tested_at": null,
+  "deployment": {"device": null, "source_manifest_verified": false, "pool_url_checked": false, "services_installed": false},
+  "checks": {
+    "unit_tests": "pending",
+    "real_muse_login_and_quota": "pending",
+    "real_drive_upload_and_download": "pending",
+    "real_wechat_enrollment": "pending",
+    "wechat_help_received_by_user": "pending",
+    "wechat_task_created": "pending",
+    "account_1_checkpoint_and_close": "pending",
+    "handoff_files_verified": "pending",
+    "account_2_resumed_without_repeating_step": "pending",
+    "final_result_uploaded": "pending",
+    "wechat_result_received_by_user": "pending",
+    "restart_recovery": "pending",
+    "duplicate_message_one_task": "pending"
+  },
+  "notes": "Record observed facts only; never store credentials, cookies or context tokens here."
+}
