@@ -18,7 +18,7 @@ function percentMatch(text, patterns) {
 
 export function parseQuota(text) {
   text = String(text).replace(/\r/g, '').replace(/\u00a0/g, ' ');
-  const extraIndex = text.search(/Additional tokens|Extra tokens|额外(?:额度|代币|令牌|Token)|附加(?:额度|代币|令牌)/i);
+  const extraIndex = text.search(/Additional tokens|Extra tokens|额外(?:的)?(?:使用)?(?:额度|代币|令牌|词元|Token)|附加(?:额度|代币|令牌)/i);
   const weeklyText = extraIndex < 0 ? text : text.slice(0, extraIndex);
   const extraText = extraIndex < 0 ? '' : text.slice(extraIndex);
   if (!/weekly|每周|周额度|周用量|本周|周限制/i.test(weeklyText))
@@ -40,12 +40,12 @@ export function parseQuota(text) {
     /^(?:.{1,35}\s+plan|免费(?:方案|套餐|版)|(?:Power|Maximum)\s*(?:方案|套餐|版)?)$/i.test(x)) || null;
   const reset = weeklyText.match(/Weekly limit resets?\s*(?:on|:)?\s*([^\n]+)/i)
     || weeklyText.match(/(?:每周额度|周额度|周限制)?\s*(?:重置日期|重置时间|重置于|重置日)\s*[:：]?\s*([^\n]+)/)
-    || weeklyText.match(/(?:每周|周额度)[^\n]*?将于\s*([^\n]+?)\s*重置/);
+    || weeklyText.match(/(?:每周(?:限额|额度|限制)|周(?:限额|额度|限制))\s*(?:将在|将于|于)\s*([^\n]+?)\s*重置/);
   const extraUsed = percentMatch(extraText, [
-    /(\d+(?:\.\d+)?)\s*%\s*used/i,
+    /(\d+(?:\.\d+)?)\s*%\s*(?:used|已使用|已用)/i,
     /(?:已使用|已用)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/,
   ]);
-  const extraLeft = extraText.match(/\(([^)\n]*(?:tokens?\s+left|剩余)[^)\n]*)\)/i)
+  const extraLeft = extraText.match(/[（(]([^）)\n]*(?:tokens?\s+left|剩余)[^）)\n]*)[）)]/i)
     || extraText.match(/([^\n]{0,50}\btokens?\s+left)/i)
     || extraText.match(/((?:剩余|可用)[^\n]{1,60})/);
   return {
@@ -54,7 +54,7 @@ export function parseQuota(text) {
     weekly_reset: reset ? reset[1].trim().slice(0, 120) : null,
     extra_used_pct: extraUsed,
     extra_left: extraLeft ? extraLeft[1].trim().slice(0, 120) : null,
-    extra_expires: /Never expires|永不过期|永久有效/i.test(extraText) ? 'never' : null,
+    extra_expires: /Never expires|永不过期|从不过期|永久有效/i.test(extraText) ? 'never' : null,
   };
 }
 
@@ -131,7 +131,8 @@ export async function readQuotaPage(page) {
   if (!dialog) throw new ProbeError('PAGE_CHANGED', '未找到设置面板。');
   const general = await visible(dialog.getByRole('tab', { name: /^(General|常规|通用)$/i }))
     || await visible(dialog.getByRole('button', { name: /^(General|常规|通用)$/i }));
-  if (general) await general.click();
+  if (general && await general.getAttribute('data-active') !== 'true' && await general.getAttribute('aria-selected') !== 'true')
+    await general.click({ timeout: 10000 });
   let lastError;
   for (let attempt = 0; attempt < 24; attempt++) {
     try { return parseQuota(await dialog.innerText()); } catch (error) { lastError = error; }

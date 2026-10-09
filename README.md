@@ -19,7 +19,8 @@ powershell -ExecutionPolicy Bypass -File .\Start.ps1
 1. 使用默认的「Muse 账号1」，或添加你需要的账号。
 2. 点「打开登录窗口」，在独立浏览器里手动登录 Muse。
 3. 登录完成后回到面板，点「保存登录并查询」。
-4. 把探针的周用量和重置日期与官网设置里的 Usage/用量页面对照。
+4. 点账号卡片的「编辑」修改名称和备注，保存后保留原来的账号 ID、登录会话和额度记录。备注可留空，最多 1000 字；正在登录或检测时请稍后编辑。
+5. 把探针的周用量和重置日期与官网设置里的 Usage/用量页面对照。
 
 密码和验证码只在官网窗口输入。账号会话保存在 data/profiles/<账号ID>；不读取你日常 Chrome 的资料。
 
@@ -129,12 +130,12 @@ DISPLAY 应是服务器本机的桌面显示编号，例如 :1。若上面的 te
 | --- | --- | --- |
 | GET | /api/quotas | 读取缓存额度、过期状态和分配建议 |
 | GET | /api/status | 同上，含账号操作状态 |
-| POST | /api/accounts | 添加账号：label 和可选代理配置 |
+| POST | /api/accounts | 添加账号：label、可选 notes 和代理配置 |
 | POST | /api/probe-all | 所有启用账号排队检测 |
 | POST | /api/accounts/ID/probe | 指定账号排队检测 |
 | POST | /api/accounts/ID/login | 本机打开独立登录窗口 |
 | POST | /api/accounts/ID/finish-login | 保存登录、关闭窗口并排队检测 |
-| PATCH | /api/accounts/ID | enabled: true/false |
+| PATCH | /api/accounts/ID | 修改 label、notes 或 enabled: true/false |
 | GET | /healthz | 不含账号资料的健康状态 |
 
 每条结果包含 account_id、quota、status、stale、checked_at、last_success_at、error、eligible_for_new_requests 和 reason。后续聊天网关可以读取这份建议，但不能据此保证单个任务的额度充足，也不能假设跨账号拥有同一聊天历史或文件授权。
@@ -147,7 +148,7 @@ npm test
 
 测试使用两个真实的临时浏览器配置，通过拦截所有网络请求提供本地模拟 Muse 页面。覆盖中英文和小数解析、Cookie 隔离、认证、代理配置、队列、失败缓存及桌面/手机页面，不访问真实 Muse、不消耗账号额度。
 
-当前已完成本地模拟验证。真实账号需用户登录后对照官网验收；开发机器没有 Docker，所以没有执行镜像构建或容器运行验证。用量页面的菜单或标签变化可能导致 PAGE_CHANGED，此时保留旧读数并显示错误。
+已完成本地模拟验证，并用当前已登录的真实账号核验中文用量页面：周用量、重置日期、额外剩余词元、额外用量及永不过期状态均可读取。新增名称和备注编辑通过界面、输入校验和数据持久化检查。其他账号仍需登录后对照官网；开发机器没有 Docker，所以没有执行镜像构建或容器运行验证。用量页面的菜单或标签变化可能导致 PAGE_CHANGED，此时保留旧读数并显示错误。
 
 参考资料：
 - https://github.com/czg86389-hub/muse2api

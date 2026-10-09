@@ -23,6 +23,14 @@ try {
   }
   assert.equal(parseQuota(chinese).weekly_used_pct, 73.5);
   assert.equal(parseQuota(chinese).weekly_reset, '10月12日');
+  const actualChinese='免费版\n每周限额将在 10月10日重置\n已使用 100%\n额外的使用额度\n从不过期\n已使用 0%（剩余 29\u00a0亿个词元）';
+  const actualQuota=parseQuota(actualChinese);
+  assert.equal(actualQuota.weekly_used_pct,100);
+  assert.equal(actualQuota.weekly_reset,'10月10日');
+  assert.equal(actualQuota.extra_left,'剩余 29 亿个词元');
+  assert.equal(actualQuota.extra_used_pct,0);
+  assert.equal(actualQuota.extra_expires,'never');
+  assert.equal(parseQuota('每周限额将在 10月10日重置\n已使用 25%').extra_left,null);
   assert.equal(parseQuota('Weekly usage\n87.5% remaining').weekly_used_pct, 12.5);
   for (const text of ['Free plan\nAdditional tokens\n0% used', 'Weekly limit\n101% used', 'Monthly limit\n25% used', '每周额度\n暂无数据'])
     assert.throws(() => parseQuota(text), e => e.code === 'PAGE_CHANGED');
@@ -106,6 +114,20 @@ try {
   await page.getByLabel('访问密钥').fill(service.token);
   await page.getByRole('button',{name:'连接',exact:true}).click();
   await page.getByRole('heading',{name:'账号 A',exact:true}).waitFor();
+  const card=page.locator('.card').filter({has:page.getByRole('heading',{name:'账号 A',exact:true})});
+  await card.getByRole('button',{name:'编辑',exact:true}).click();
+  await page.getByLabel('账号名称',{exact:true}).last().fill('日常任务 A');
+  await page.getByLabel('备注（可选）',{exact:true}).last().fill('已绑定网盘\n<script>window.injected=true</script>');
+  await page.getByRole('button',{name:'保存',exact:true}).click();
+  await page.getByRole('heading',{name:'日常任务 A',exact:true}).waitFor();
+  assert.equal(await page.locator('.notes').first().textContent(),'已绑定网盘\n<script>window.injected=true</script>');
+  assert.equal(await page.evaluate(()=>window.injected),undefined);
+  const edited=(await api('status')).data.accounts.find(a=>a.id===accountA.id);
+  assert.equal(edited.label,'日常任务 A');assert.equal(edited.enabled,true);assert.equal(edited.quota.weekly_used_pct,12.5);
+  assert.equal((await api('accounts/'+accountA.id,'PATCH',{label:'不应保存',notes:'x'.repeat(1001)})).status,400);
+  assert.equal((await api('accounts/'+accountA.id,'PATCH',{label:'   '})).status,400);
+  assert.equal((await api('accounts/'+accountA.id,'PATCH',{proxy_server:'http://localhost:8'})).status,400);
+  assert.equal((await api('status')).data.accounts.find(a=>a.id===accountA.id).label,'日常任务 A');
   await page.screenshot({path:join(workDir,'muse-dashboard-test.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});
   await page.screenshot({path:join(workDir,'muse-dashboard-mobile-test.png'),fullPage:true});
@@ -125,7 +147,9 @@ try {
   await waitComplete();
   const disk=JSON.parse(await readFile(join(temporary,'service','state.json'),'utf8'));
   assert.equal(disk.snapshots[accountA.id].quota.weekly_used_pct,12.5);
-  console.log('PASS HTTP 鉴权、账号输入、串行队列、重复检测、失败缓存和桌面/手机页面');
+  assert.equal(disk.accounts.find(a=>a.id===accountA.id).label,'日常任务 A');
+  assert.equal(disk.accounts.find(a=>a.id===accountA.id).notes,'已绑定网盘\n<script>window.injected=true</script>');
+  console.log('PASS HTTP 鉴权、名称备注编辑与持久化、账号输入、串行队列、重复检测、失败缓存和桌面/手机页面');
   console.log('以上为本地模拟验证；未登录真实 Muse 账号，不代表真实账号或 Docker 已验证。');
 } finally {
   if(browser)await browser.close();

@@ -12,7 +12,7 @@ try { await access(join(ROOT, '.env')); loadEnvFile(join(ROOT, '.env')); } catch
 }
 const ID = /^[a-f0-9]{12}$/;
 const publicAccount = a => ({
-  id: a.id, label: a.label, enabled: a.enabled,
+  id: a.id, label: a.label, notes: a.notes || '', enabled: a.enabled,
   proxy_server: a.proxy_server || '', proxy_username_env: a.proxy_username_env || '',
   proxy_password_env: a.proxy_password_env || '',
 });
@@ -159,7 +159,9 @@ export async function createService(options = {}) {
         const data = await body(req);
         if (typeof data.label !== 'string' || !data.label.trim() || data.label.length > 80)
           throw Object.assign(new Error('账号名称需要 1–80 个字符。'), { status: 400 });
-        const a = { id: randomBytes(6).toString('hex'), label: data.label.trim(), enabled: true };
+        if (data.notes !== undefined && (typeof data.notes !== 'string' || data.notes.length > 1000))
+          throw Object.assign(new Error('备注最多 1000 个字符。'), { status: 400 });
+        const a = { id: randomBytes(6).toString('hex'), label: data.label.trim(), notes: data.notes?.trim() || '', enabled: true };
         for (const key of ['proxy_server', 'proxy_username_env', 'proxy_password_env']) {
           if (data[key] !== undefined && (typeof data[key] !== 'string' || data[key].length > 256))
             throw Object.assign(new Error('代理配置格式无效。'), { status: 400 });
@@ -178,8 +180,21 @@ export async function createService(options = {}) {
       if (req.method === 'PATCH' && !action) {
         const data = await body(req);
         if (jobs.has(a.id) || logins.has(a.id)) throw Object.assign(new Error('账号正在操作，请稍后修改。'), { status: 409 });
-        if (typeof data.enabled !== 'boolean') throw Object.assign(new Error('enabled 需要布尔值。'), { status: 400 });
-        a.enabled = data.enabled; await save(); respond(res, 200, publicAccount(a)); return;
+        const keys = Object.keys(data);
+        if (!keys.length || keys.some(key => !['enabled', 'label', 'notes'].includes(key)))
+          throw Object.assign(new Error('仅支持修改名称、备注和启用状态。'), { status: 400 });
+        if ('enabled' in data && typeof data.enabled !== 'boolean')
+          throw Object.assign(new Error('enabled 需要布尔值。'), { status: 400 });
+        if ('label' in data && (typeof data.label !== 'string' || !data.label.trim() || data.label.length > 80))
+          throw Object.assign(new Error('账号名称需要 1–80 个字符。'), { status: 400 });
+        if ('notes' in data && (typeof data.notes !== 'string' || data.notes.length > 1000))
+          throw Object.assign(new Error('备注最多 1000 个字符。'), { status: 400 });
+        const previous = { ...a };
+        if ('enabled' in data) a.enabled = data.enabled;
+        if ('label' in data) a.label = data.label.trim();
+        if ('notes' in data) a.notes = data.notes.trim();
+        try { await save(); } catch (error) { Object.assign(a, previous); throw error; }
+        respond(res, 200, publicAccount(a)); return;
       }
       if (req.method !== 'POST') { respond(res, 405, { error: '请求方法不支持。' }); return; }
       await body(req);
