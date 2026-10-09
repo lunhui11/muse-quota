@@ -24,12 +24,12 @@ export function parseQuota(text) {
   if (!/weekly|每周|周额度|周用量|本周|周限制/i.test(weeklyText))
     throw new ProbeError('PAGE_CHANGED', '没有找到周额度区块，请对照 Muse 设置中的用量页面。');
   let used = percentMatch(weeklyText, [
-    /(\d+(?:\.\d+)?)\s*%\s*(?:used|已使用|已用|已消耗)/i,
+    /(?<![\d.,+\-])(\d+(?:\.\d+)?)\s*%\s*(?:used|已使用|已用|已消耗)/i,
     /(?:已使用|已用|已消耗|使用了|Used)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/i,
   ]);
   if (used === null) {
     const remaining = percentMatch(weeklyText, [
-      /(\d+(?:\.\d+)?)\s*%\s*(?:remaining|left|剩余)/i,
+      /(?<![\d.,+\-])(\d+(?:\.\d+)?)\s*%\s*(?:remaining|left|剩余)/i,
       /(?:剩余|remaining)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/i,
     ]);
     if (remaining !== null) used = Math.round((100 - remaining) * 100) / 100;
@@ -42,7 +42,7 @@ export function parseQuota(text) {
     || weeklyText.match(/(?:每周额度|周额度|周限制)?\s*(?:重置日期|重置时间|重置于|重置日)\s*[:：]?\s*([^\n]+)/)
     || weeklyText.match(/(?:每周(?:限额|额度|限制)|周(?:限额|额度|限制))\s*(?:将在|将于|于)\s*([^\n]+?)\s*重置/);
   const extraUsed = percentMatch(extraText, [
-    /(\d+(?:\.\d+)?)\s*%\s*(?:used|已使用|已用)/i,
+    /(?<![\d.,+\-])(\d+(?:\.\d+)?)\s*%\s*(?:used|已使用|已用)/i,
     /(?:已使用|已用)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*%/,
   ]);
   const extraLeft = extraText.match(/[（(]([^）)\n]*(?:tokens?\s+left|剩余)[^）)\n]*)[）)]/i)

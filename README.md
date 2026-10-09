@@ -142,6 +142,8 @@ DISPLAY 应是服务器本机的桌面显示编号，例如 :1。若上面的 te
 
 ## 验证与限制
 
+上传前的修复和检查结果见 [audit-report.md](audit-report.md)。
+
 ~~~bash
 npm test
 ~~~

@@ -55,12 +55,14 @@ export async function createService(options = {}) {
   }
   if (token.length < 32) throw new Error('访问密钥文件无效。');
   let saving = Promise.resolve();
-  function save() {
-    const serialized = JSON.stringify(state, null, 2);
+  function save(change = () => () => {}) {
     saving = saving.catch(() => {}).then(async () => {
-      const temp = statePath + '.tmp';
-      await writeFile(temp, serialized, { mode: 0o600 });
-      await rename(temp, statePath);
+      const rollback = change();
+      try {
+        const temp = statePath + '.tmp';
+        await writeFile(temp, JSON.stringify(state, null, 2), { mode: 0o600 });
+        await rename(temp, statePath);
+      } catch (error) { rollback(); throw error; }
     });
     return saving;
   }
@@ -84,16 +86,23 @@ export async function createService(options = {}) {
     tail = tail.catch(() => {}).then(async () => {
       if (stopped || !a.enabled) { jobs.delete(a.id); return; }
       jobs.set(a.id, 'running');
+      let snapshot;
       try {
         const quota = await prober(a, profile(a));
         const checkedAt = new Date().toISOString();
-        state.snapshots[a.id] = { quota, status: 'success', checked_at: checkedAt, last_success_at: checkedAt, error: null };
+        snapshot = { quota, status: 'success', checked_at: checkedAt, last_success_at: checkedAt, error: null };
       } catch (error) {
-        if (!stopped) state.snapshots[a.id] = {
+        snapshot = {
           ...state.snapshots[a.id], status: 'error', checked_at: new Date().toISOString(), error: publicError(error),
         };
       } finally {
-        try { if (!stopped) await save(); }
+        try {
+          if (!stopped) await save(() => {
+            const previous = state.snapshots[a.id];
+            state.snapshots[a.id] = snapshot;
+            return () => { if (previous) state.snapshots[a.id] = previous; else delete state.snapshots[a.id]; };
+          });
+        }
         catch (error) {
           state.snapshots[a.id] = {
             ...state.snapshots[a.id], status: 'error',
@@ -122,11 +131,13 @@ export async function createService(options = {}) {
   async function body(req) {
     if (!/^application\/json(?:;|$)/i.test(req.headers['content-type'] || ''))
       throw Object.assign(new Error('请发送 JSON 请求。'), { status: 415 });
-    let text = '';
-    for await (const part of req) {
-      text += part.toString();
-      if (Buffer.byteLength(text) > 16384) throw Object.assign(new Error('请求过大。'), { status: 413 });
+    const chunks = []; let size = 0;
+    for await (const part of req.iterator({ destroyOnReturn: false })) {
+      size += part.length;
+      if (size > 16384) { req.resume(); throw Object.assign(new Error('请求过大。'), { status: 413 }); }
+      chunks.push(part);
     }
+    const text = Buffer.concat(chunks).toString('utf8');
     try { const value = text ? JSON.parse(text) : {}; if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('bad body'); return value; }
     catch { throw Object.assign(new Error('JSON 无效。'), { status: 400 }); }
   }
@@ -168,7 +179,11 @@ export async function createService(options = {}) {
           a[key] = data[key]?.trim() || '';
         }
         try { proxyOptions(a); } catch (e) { throw Object.assign(e, { status: 400 }); }
-        state.accounts.push(a); await save(); respond(res, 201, publicAccount(a)); return;
+        await save(() => {
+          state.accounts.push(a);
+          return () => { state.accounts.splice(state.accounts.indexOf(a), 1); };
+        });
+        respond(res, 201, publicAccount(a)); return;
       }
       if (req.method === 'POST' && url.pathname === '/api/probe-all') {
         await body(req);
@@ -189,11 +204,16 @@ export async function createService(options = {}) {
           throw Object.assign(new Error('账号名称需要 1–80 个字符。'), { status: 400 });
         if ('notes' in data && (typeof data.notes !== 'string' || data.notes.length > 1000))
           throw Object.assign(new Error('备注最多 1000 个字符。'), { status: 400 });
-        const previous = { ...a };
-        if ('enabled' in data) a.enabled = data.enabled;
-        if ('label' in data) a.label = data.label.trim();
-        if ('notes' in data) a.notes = data.notes.trim();
-        try { await save(); } catch (error) { Object.assign(a, previous); throw error; }
+        await save(() => {
+          if (jobs.has(a.id) || logins.has(a.id)) throw Object.assign(new Error('账号正在操作，请稍后修改。'), { status: 409 });
+          const previous = { ...a };
+          if ('enabled' in data) a.enabled = data.enabled;
+          if ('label' in data) a.label = data.label.trim();
+          if ('notes' in data) a.notes = data.notes.trim();
+          return () => {
+            for (const key of keys) { if (key in previous) a[key] = previous[key]; else delete a[key]; }
+          };
+        });
         respond(res, 200, publicAccount(a)); return;
       }
       if (req.method !== 'POST') { respond(res, 405, { error: '请求方法不支持。' }); return; }

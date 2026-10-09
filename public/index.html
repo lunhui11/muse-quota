@@ -32,8 +32,10 @@ const escapeHTML = value => { const span = document.createElement('span'); span.
 const when = value => value ? new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false}) : '尚无记录';
 function notice(text, error=false) { $('notice').textContent=text; $('notice').className='notice'+(error?' error':''); }
 async function api(path, method='GET', data) {
-  const response = await fetch('/api/'+path, {method,headers:{Authorization:'Bearer '+key,'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});
+  const requestKey=key;
+  const response = await fetch('/api/'+path, {method,headers:{Authorization:'Bearer '+requestKey,'Content-Type':'application/json'},body:data===undefined?undefined:JSON.stringify(data)});
   const result=await response.json();
+  if(requestKey!==key)throw new Error('连接已更改，请重新操作。');
   if(!response.ok){if(response.status===401)showAuth();throw new Error(result.error || '请求失败');}
   return result;
 }
@@ -58,7 +60,7 @@ async function update(){
   }).join('');
 }
 $('auth-form').addEventListener('submit',async e=>{e.preventDefault();key=$('key').value.trim();try{await update();sessionStorage.setItem('muse-probe-key',key);$('key').value='';notice('已连接。');}catch(err){notice(err.message,true);}});
-$('logout').onclick=()=>{sessionStorage.removeItem('muse-probe-key');key='';showAuth();notice('已退出。');};
+$('logout').onclick=()=>{sessionStorage.removeItem('muse-probe-key');key='';accounts=[];$('cards').replaceChildren();$('edit-dialog').close();showAuth();notice('已退出。');};
 $('refresh').onclick=async()=>{try{const r=await api('probe-all','POST',{});notice('已加入检测队列：'+r.queued+' 个账号。');await update();}catch(err){notice(err.message,true);}};
 $('add-form').addEventListener('submit',async e=>{e.preventDefault();try{await api('accounts','POST',{label:$('label').value,notes:$('notes').value,proxy_server:$('proxy').value,proxy_username_env:$('proxy-user').value,proxy_password_env:$('proxy-pass').value});e.target.reset();await update();notice('账号已添加，请先登录。');}catch(err){notice(err.message,true);}});
 $('edit-cancel').onclick=()=>$('edit-dialog').close();

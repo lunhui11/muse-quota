@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises';
+import { request } from 'node:http';
+import { mkdtemp, mkdir, readFile, rm, rmdir } from 'node:fs/promises';
 import { join, resolve, dirname, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
@@ -10,7 +11,7 @@ const root = dirname(fileURLToPath(import.meta.url));
 const workDir = resolve(process.env.TEST_WORK_DIR || join(root, 'work'));
 await mkdir(workDir, { recursive: true });
 const temporary = await mkdtemp(join(workDir, 'muse-test-'));
-let browser, service;
+let browser, service, releaseProbe;
 const english = pct => 'Free plan\nWeekly limit resets on Oct 12\n' + pct + '% used\nAdditional tokens\n0% used (2B tokens left)\nNever expires';
 const chinese = '免费方案\n每周额度\n重置日期：10月12日\n已使用 73.5%\n额外额度\n已使用 0%\n剩余 2B 代币\n永不过期';
 try {
@@ -32,7 +33,7 @@ try {
   assert.equal(actualQuota.extra_expires,'never');
   assert.equal(parseQuota('每周限额将在 10月10日重置\n已使用 25%').extra_left,null);
   assert.equal(parseQuota('Weekly usage\n87.5% remaining').weekly_used_pct, 12.5);
-  for (const text of ['Free plan\nAdditional tokens\n0% used', 'Weekly limit\n101% used', 'Monthly limit\n25% used', '每周额度\n暂无数据'])
+  for (const text of ['Free plan\nAdditional tokens\n0% used', 'Weekly limit\n101% used', 'Monthly limit\n25% used', '每周额度\n暂无数据','Weekly limit\n-1% used','Weekly limit\n1,000% used','Weekly limit\n100.5% used'])
     assert.throws(() => parseQuota(text), e => e.code === 'PAGE_CHANGED');
   assert.equal(proxyOptions({proxy_server:'socks5://localhost:1080'}).server, 'socks5://localhost:1080');
   assert.throws(() => proxyOptions({proxy_server:'http://secret:secret@localhost:8080'}), e => e.code === 'CONFIGURATION_ERROR');
@@ -71,8 +72,10 @@ try {
   console.log('PASS 两个真实浏览器配置的 Cookie 隔离及页面探测（模拟用量页面）');
 
   let active=0,maxActive=0,fail=false,calls=0;
+  const initialProbeGate=new Promise(resolve=>{releaseProbe=resolve;});
   service=await createService({dataDir:join(temporary,'service'),seed:false,scheduler:false,prober:async(account,profile)=>{
     active++;calls++;maxActive=Math.max(active,maxActive);
+    await initialProbeGate;
     assert.equal(basename(profile),account.id);
     await new Promise(r=>setTimeout(r,80));
     active--;
@@ -91,8 +94,32 @@ try {
   const accountA=(await api('accounts','POST',{label:'账号 A'})).data;
   const accountB=(await api('accounts','POST',{label:'账号 B'})).data;
   assert.notEqual(accountA.id,accountB.id);
+  // Force an actual filesystem write failure, then verify rollback and recovery.
+  const blockedFile=join(service.dataDir,'state.json.tmp');
+  await mkdir(blockedFile);
+  assert.equal((await api('accounts','POST',{label:'不能保存的账号'})).status,500);
+  assert.equal((await api('accounts/'+accountA.id,'PATCH',{label:'不能保存的名称',notes:'不能保存的备注'})).status,500);
+  let unchanged=(await api('status')).data.accounts;
+  assert.equal(unchanged.length,2);
+  assert.equal(unchanged.find(a=>a.id===accountA.id).label,'账号 A');
+  assert.equal(unchanged.find(a=>a.id===accountA.id).notes,'');
+  await rmdir(blockedFile); // Exact temporary directory owned by this test.
+  const splitNotes='分段中文🙂';
+  const payload=Buffer.from(JSON.stringify({notes:splitNotes}));
+  const splitAt=payload.indexOf(Buffer.from('分'))+1;
+  const splitResult=await new Promise((resolve,reject)=>{
+    const req=request(base+'/api/accounts/'+accountA.id,{method:'PATCH',headers:{Authorization:'Bearer '+service.token,'Content-Type':'application/json'}},res=>{
+      const parts=[];res.on('data',part=>parts.push(part));res.on('end',()=>resolve({status:res.statusCode,data:JSON.parse(Buffer.concat(parts).toString())}));
+    });
+    req.on('error',reject);req.write(payload.subarray(0,splitAt));setTimeout(()=>req.end(payload.subarray(splitAt)),30);
+  });
+  assert.equal(splitResult.status,200);assert.equal(splitResult.data.notes,splitNotes);
+  assert.equal((await api('accounts','POST',{label:'x',notes:'x'.repeat(17000)})).status,413);
   assert.equal((await api('probe-all','POST',{})).data.queued,2);
   assert.equal((await api('accounts/'+accountA.id+'/probe','POST',{})).data.queued,false);
+  assert.equal((await api('accounts/'+accountA.id,'PATCH',{enabled:false})).status,409);
+  assert.equal((await api('accounts/'+accountA.id+'/login','POST',{})).status,409);
+  releaseProbe();
   async function waitComplete(){
     for(let i=0;i<60;i++){
       const list=(await api('status')).data.accounts;
@@ -133,6 +160,19 @@ try {
   await page.screenshot({path:join(workDir,'muse-dashboard-mobile-test.png'),fullPage:true});
   assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);
   assert.deepEqual(pageErrors,[]);
+  let releaseStatus,seenStatus;
+  const pendingStatusGate=new Promise(resolve=>{releaseStatus=resolve;});
+  const statusSeen=new Promise(resolve=>{seenStatus=resolve;});
+  await page.route('**/api/status',async route=>{
+    const response=await route.fetch();seenStatus();await pendingStatusGate;await route.fulfill({response});
+  });
+  const pendingUpdate=page.evaluate(()=>update().catch(()=>{}));
+  await statusSeen;
+  await page.getByRole('button',{name:'退出面板',exact:true}).click();
+  releaseStatus();await pendingUpdate;
+  assert.equal(await page.locator('#auth').isVisible(),true);
+  assert.equal(await page.locator('#dashboard').isVisible(),false);
+  assert.equal(await page.locator('#cards').textContent(),'');
   await browser.close();browser=null;
 
   fail=true;
@@ -149,9 +189,10 @@ try {
   assert.equal(disk.snapshots[accountA.id].quota.weekly_used_pct,12.5);
   assert.equal(disk.accounts.find(a=>a.id===accountA.id).label,'日常任务 A');
   assert.equal(disk.accounts.find(a=>a.id===accountA.id).notes,'已绑定网盘\n<script>window.injected=true</script>');
-  console.log('PASS HTTP 鉴权、名称备注编辑与持久化、账号输入、串行队列、重复检测、失败缓存和桌面/手机页面');
+  console.log('PASS HTTP 鉴权、保存失败回滚、分段中文请求、名称备注编辑与持久化、退出时并发刷新、账号输入、登录检测互斥、串行队列、重复检测、失败缓存和桌面/手机页面');
   console.log('以上为本地模拟验证；未登录真实 Muse 账号，不代表真实账号或 Docker 已验证。');
 } finally {
+  releaseProbe?.();
   if(browser)await browser.close();
   if(service)await service.stop();
   if(dirname(temporary)===workDir && basename(temporary).startsWith('muse-test-'))
