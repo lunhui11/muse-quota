@@ -1,0 +1,22 @@
+services:
+  probe:
+    build: .
+    image: muse-quota-probe:local
+    init: true
+    restart: unless-stopped
+    shm_size: 1gb
+    ports:
+      - "127.0.0.1:8788:8788"
+    env_file: .env
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8788"
+      DATA_DIR: "/app/data"
+      PROBE_INTERVAL_MINUTES: "${PROBE_INTERVAL_MINUTES:-30}"
+      PAUSE_AT_PERCENT: "${PAUSE_AT_PERCENT:-90}"
+      ALLOW_LOGIN: "0"
+    volumes:
+      - muse-data:/app/data
+volumes:
+  muse-data:
+    name: muse-quota-data

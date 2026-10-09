@@ -1,0 +1,157 @@
+# Muse 额度探针
+
+独立浏览器会话读取 muse.ai 的周用量百分比、重置日期、套餐和额外额度。支持手动/定时检测及每个账号的固定代理。
+
+这是第一阶段的额度工具。它输出账号是否适合分配新请求的建议，不执行聊天、注册、切号、Google Drive 绑定或任务重放。
+
+## Windows 使用
+
+需要 Node.js 20.12+ 和 Google Chrome。
+
+在项目目录运行：
+
+~~~powershell
+powershell -ExecutionPolicy Bypass -File .\Start.ps1
+~~~
+
+启动脚本安装锁定依赖、后台启动服务、将访问密钥复制到剪贴板，然后打开 http://127.0.0.1:8788。在页面粘贴密钥并连接。
+
+1. 使用默认的「Muse 账号1」，或添加你需要的账号。
+2. 点「打开登录窗口」，在独立浏览器里手动登录 Muse。
+3. 登录完成后回到面板，点「保存登录并查询」。
+4. 把探针的周用量和重置日期与官网设置里的 Usage/用量页面对照。
+
+密码和验证码只在官网窗口输入。账号会话保存在 data/profiles/<账号ID>；不读取你日常 Chrome 的资料。
+
+仅后台启动、不打开页面或复制密钥：
+
+~~~powershell
+.\Start.ps1 -NoBrowser -NoClipboard
+~~~
+
+在终端前台运行：
+
+~~~powershell
+npm ci --ignore-scripts --no-audit --no-fund
+node server.mjs
+~~~
+
+关闭前台服务用 Ctrl+C。后台实例的进程 ID 保存在 data/service.pid；停止该实例前先核对进程命令行确为本项目的 server.mjs。
+
+## 配置
+
+复制 .env.example 为 .env 后修改，重启服务生效：
+
+- PROBE_INTERVAL_MINUTES：默认每 30 分钟检测，允许 1–1440 分钟。
+- PAUSE_AT_PERCENT：默认 90，达到此周用量时不再建议分配新请求。
+- DATA_DIR：数据目录；默认项目里的 data。
+- BROWSER_CHANNEL：Windows 默认 chrome；Linux 默认 Playwright Chromium。
+- HOST/PORT：本地默认 127.0.0.1:8788。
+- ALLOW_LOGIN：设为 0 时禁止从面板打开交互式浏览器。
+
+数据与访问密钥都在 data 目录。该目录和 .env 被排除在 Git 与 Docker 镜像之外。迁移或升级前保存该目录，不能同时让两份服务写同一目录。
+
+检测串行执行；重复刷新不会为同一账号重复排队。登录窗口占用该账号会话，必须保存/关闭后才能检测。读不到百分比时显示未知；失败保留旧结果并标记过期，不会把失败当成 0% 用量。最后成功超过两倍刷新间隔时也标记过期。
+
+重置日期按官网原文显示；若页面缺少年份或时区，不推算精确重置时间。未提供总 token 数时只显示百分比。
+
+## 固定代理与隔离
+
+添加账号时填写代理地址，例如 http://127.0.0.1:7890 或 socks5://127.0.0.1:1080。认证代理在 .env 中设置环境变量，再在账号表单中填写变量名：
+
+~~~dotenv
+MUSE_A_PROXY_USER=你的代理用户名
+MUSE_A_PROXY_PASSWORD=你的代理密码
+~~~
+
+不同账号可以填写不同固定代理地址。浏览器使用配置的代理访问 Muse；代理失败不回退直连。Chromium 的 SOCKS5 认证不在此实现中支持，需要认证时使用 HTTP 代理。
+
+浏览器目录隔离 Cookie 和本地存储，不改变公网 IP，也不代表不同硬件。此工具不伪造设备指纹，不承诺防封。服务没有自动购买或分配代理。
+
+## Linux / Docker 部署
+
+需要 Linux、Docker Engine 和 Docker Compose。Playwright 依赖和浏览器镜像都固定在 1.62.1。
+
+~~~bash
+cp .env.example .env
+docker compose up -d --build
+docker compose logs --tail=30 probe
+~~~
+
+容器以 pwuser 运行，持久化卷名为 muse-quota-data。宿主端口只绑定 127.0.0.1。通过 SSH 隧道访问：
+
+~~~bash
+ssh -N -L 8788:127.0.0.1:8788 用户@服务器
+~~~
+
+然后在本机打开 http://127.0.0.1:8788。服务器上读取密钥用于页面连接：
+
+~~~bash
+docker compose exec probe cat /app/data/admin-token.txt
+~~~
+
+不要将后台服务、浏览器调试端口或登录桌面直接暴露到公网。
+
+### 云端首次登录
+
+不能保证将 Windows Chrome 配置复制到 Linux 后仍可登录；在服务器的容器浏览器环境中重新登录。
+
+无界面的容器无法展示登录窗口。先在服务器建立受保护的 X11 图形桌面，并在其桌面终端中运行下面的命令；只运行 SSH 隧道不会自动提供图形环境。Wayland-only 桌面需要另行配置 X11/XWayland。现在的交付不自动安装远程桌面。
+
+先在面板添加账号，记下其 ID。下列操作让登录和后台服务使用同一容器用户、同一数据卷：
+
+~~~bash
+docker compose stop probe
+mkdir -p work
+chmod 700 work
+task_xauth="${XAUTHORITY:-$HOME/.Xauthority}"
+test -n "$DISPLAY" && test -f "$task_xauth"
+cp "$task_xauth" work/desktop-auth
+chmod 644 work/desktop-auth
+docker compose run --rm -it \
+  -e ALLOW_LOGIN=1 -e DISPLAY -e XAUTHORITY=/run/desktop-auth \
+  -v /tmp/.X11-unix:/tmp/.X11-unix:ro \
+  -v "$PWD/work/desktop-auth:/run/desktop-auth:ro" \
+  probe node server.mjs login 你的账号ID
+rm -- work/desktop-auth
+docker compose up -d
+~~~
+
+DISPLAY 应是服务器本机的桌面显示编号，例如 :1。若上面的 test 失败，先配置图形会话及授权文件，不要继续执行登录命令。
+
+在弹出的 Muse 官网窗口登录，完成后在终端按 Enter 保存退出，再启动后台服务并从面板查询。work 目录不会进入 Git 或镜像。云端的网络访问、代理、登录和容器运行都需要在实际服务器上重新核验。
+
+## 额度 API
+
+所有 /api/* 路径需要 Authorization: Bearer <访问密钥>；请求体使用 JSON。
+
+| 方法 | 路径 | 用途 |
+| --- | --- | --- |
+| GET | /api/quotas | 读取缓存额度、过期状态和分配建议 |
+| GET | /api/status | 同上，含账号操作状态 |
+| POST | /api/accounts | 添加账号：label 和可选代理配置 |
+| POST | /api/probe-all | 所有启用账号排队检测 |
+| POST | /api/accounts/ID/probe | 指定账号排队检测 |
+| POST | /api/accounts/ID/login | 本机打开独立登录窗口 |
+| POST | /api/accounts/ID/finish-login | 保存登录、关闭窗口并排队检测 |
+| PATCH | /api/accounts/ID | enabled: true/false |
+| GET | /healthz | 不含账号资料的健康状态 |
+
+每条结果包含 account_id、quota、status、stale、checked_at、last_success_at、error、eligible_for_new_requests 和 reason。后续聊天网关可以读取这份建议，但不能据此保证单个任务的额度充足，也不能假设跨账号拥有同一聊天历史或文件授权。
+
+## 验证与限制
+
+~~~bash
+npm test
+~~~
+
+测试使用两个真实的临时浏览器配置，通过拦截所有网络请求提供本地模拟 Muse 页面。覆盖中英文和小数解析、Cookie 隔离、认证、代理配置、队列、失败缓存及桌面/手机页面，不访问真实 Muse、不消耗账号额度。
+
+当前已完成本地模拟验证。真实账号需用户登录后对照官网验收；开发机器没有 Docker，所以没有执行镜像构建或容器运行验证。用量页面的菜单或标签变化可能导致 PAGE_CHANGED，此时保留旧读数并显示错误。
+
+参考资料：
+- https://github.com/czg86389-hub/muse2api
+- https://playwright.dev/docs/auth
+- https://playwright.dev/docs/api/class-browsertype#browser-type-launch-persistent-context
+- https://playwright.dev/docs/network
+- https://playwright.dev/docs/docker

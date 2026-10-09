@@ -1,0 +1,12 @@
+.git
+node_modules
+data
+.env
+*.log
+*.zip
+test.mjs
+design.md
+implementation-plan.md
+README.md
+Start.ps1
+work
