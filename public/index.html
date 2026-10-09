@@ -12,6 +12,9 @@
 <div id="toolbar" class="tools"><button id="refresh" class="primary">检测全部账号</button></div></header>
 <div id="notice" class="notice" role="status" aria-live="polite"></div>
 <section id="dashboard"><div id="summary" class="summary"></div><div id="cards" class="grid"></div>
+<section class="panel add"><h2>任务账号池</h2><p id="pool-summary" class="muted">正在读取账号池状态…</p><div class="tools"><button id="pool-sync">立即同步资料到所有网盘</button><button id="pool-tick">重试交接 / 更新调度</button></div><div id="pool-tasks"></div>
+<details><summary>添加任务</summary><form id="task-form"><label for="task-prompt">任务说明</label><textarea id="task-prompt" maxlength="10000" required placeholder="任务目标、输出要求和资料说明"></textarea><button class="primary">加入账号池</button></form></details>
+<details><summary>添加每日同步资料</summary><form id="document-form"><label for="document-title">资料标题</label><input id="document-title" maxlength="120" required><label for="document-content">资料内容</label><textarea id="document-content" maxlength="10000" required></textarea><button>保存资料</button></form></details><p class="muted">为每个账号在「编辑」中填写网盘目录。任务执行程序领取任务、上报额度并提交暂停进度后，账号池自动同步交接文件并分配给下一账号。</p></section>
 <section class="panel add"><details><summary>添加 Muse 账号</summary><form id="add-form"><div class="form-grid">
 <div><label for="label">账号名称</label><input id="label" maxlength="80" placeholder="例如：日常任务" required></div>
 <div><label for="proxy">固定代理地址（可选）</label><input id="proxy" placeholder="http://127.0.0.1:7890"></div>
@@ -22,10 +25,10 @@
 <button class="primary" style="margin-top:14px">添加账号</button></form></details></section>
 <footer>登录时会打开该账号独立的浏览器窗口。登录完成后，回到这里点「保存登录并查询」。<br>面板每 5 秒读取缓存；Muse 的实际检测按上方间隔运行。过期读数仅供参考，无法保证账号不会被封。</footer>
 </section>
-<dialog id="edit-dialog"><form id="edit-form"><h2>编辑账号</h2><label for="edit-label">账号名称</label><input id="edit-label" maxlength="80" required><label for="edit-notes">备注（可选）</label><textarea id="edit-notes" maxlength="1000"></textarea><p id="edit-error" class="notice error" role="alert"></p><div class="tools"><button id="edit-save" class="primary">保存</button><button id="edit-cancel" type="button">取消</button></div></form></dialog>
+<dialog id="edit-dialog"><form id="edit-form"><h2>编辑账号</h2><label for="edit-label">账号名称</label><input id="edit-label" maxlength="80" required><label for="edit-notes">备注（可选）</label><textarea id="edit-notes" maxlength="1000"></textarea><label for="edit-folder">Google Drive 目录 ID 或链接</label><input id="edit-folder" maxlength="256" placeholder="https://drive.google.com/drive/folders/…"><p class="muted">请在该 Muse 账号中手动连接此目录，并给上传资料的 Google 账号目录写入权限。</p><p id="edit-error" class="notice error" role="alert"></p><div class="tools"><button id="edit-save" class="primary">保存</button><button id="edit-cancel" type="button">取消</button></div></form></dialog>
 </main>
 <script>
-let polling = false, accounts = [], editingId = null, updateSequence = 0;
+let polling = false, accounts = [], editingId = null, updateSequence = 0, poolSequence = 0, poolState = null;
 const $ = id => document.getElementById(id);
 const escapeHTML = value => { const span = document.createElement('span'); span.textContent = String(value ?? ''); return span.innerHTML; };
 const when = value => value ? new Date(value).toLocaleString('zh-CN', {timeZone:'Asia/Shanghai',hour12:false}) : '尚无记录';
@@ -47,7 +50,7 @@ async function update(){
   accounts=data.accounts;
   $('cards').innerHTML=data.accounts.map(a=>{
     const q=a.quota, percent=q?.weekly_used_pct;
-    const state=a.login_open?'登录窗口已打开':a.job==='running'?'正在检测':a.job==='queued'?'等待检测':!a.enabled?'已停用':a.status==='never_checked'?'尚未检测':a.status==='error'?'读取失败':a.stale?'读数已过期':a.eligible_for_new_requests?'可分配新请求':'暂停推荐';
+    const state=a.pool_busy?'任务执行中或等待暂停':a.login_open?'登录窗口已打开':a.job==='running'?'正在检测':a.job==='queued'?'等待检测':!a.enabled?'已停用':a.status==='never_checked'?'尚未检测':a.status==='error'?'读取失败':a.stale?'读数已过期':a.eligible_for_new_requests?'可分配新请求':'暂停推荐';
     const warn=percent!==undefined && percent>=data.pause_at_percent;
     return '<article class="card"><div class="card-top"><h2>'+escapeHTML(a.label)+'</h2><span class="badge '+(a.eligible_for_new_requests?'ok':warn?'warn':'')+'">'+state+'</span></div>'+
       (a.notes?'<p class="notes">'+escapeHTML(a.notes)+'</p>':'')+
@@ -55,8 +58,8 @@ async function update(){
       '<div class="bar"><div class="fill '+(warn?'warn':'')+'" style="width:'+(percent??0)+'%"></div></div>'+
       '<dl><dt>周剩余</dt><dd>'+(q?escapeHTML(q.weekly_remaining_pct)+'%':'未知')+'</dd><dt>重置日期</dt><dd>'+escapeHTML(q?.weekly_reset||'未知')+'</dd><dt>套餐</dt><dd>'+escapeHTML(q?.plan||'未知')+'</dd><dt>额外额度</dt><dd>'+escapeHTML(q?.extra_left||'未读取到')+(q?.extra_used_pct!=null?' · 已用 '+escapeHTML(q.extra_used_pct)+'%':'')+'</dd><dt>额外有效期</dt><dd>'+escapeHTML(q?.extra_expires==='never'?'永不过期':q?.extra_expires||'未读取到')+'</dd><dt>最后成功</dt><dd>'+escapeHTML(when(a.last_success_at))+'</dd><dt>网络出口</dt><dd>'+escapeHTML(a.proxy_server||'当前网络（直连）')+'</dd></dl>'+
       (a.error?'<div class="error-box">'+escapeHTML(a.error.message)+'</div>':'')+
-      '<div class="tools">'+(a.login_open?'<button data-action="finish-login" data-id="'+a.id+'" class="primary">保存登录并查询</button>':'<button data-action="login" data-id="'+a.id+'" '+(!data.login_available||!a.enabled||a.job?'disabled':'')+'>打开登录窗口</button><button data-action="probe" data-id="'+a.id+'" '+(!a.enabled||a.job?'disabled':'')+'>查询额度</button>')+
-      '<button data-action="edit" data-id="'+a.id+'" '+(a.login_open||a.job?'disabled':'')+'>编辑</button><button data-action="toggle" data-enabled="'+a.enabled+'" data-id="'+a.id+'" '+(a.login_open||a.job?'disabled':'')+'>'+(a.enabled?'停用':'启用')+'</button></div>'+
+      '<div class="tools">'+(a.login_open?'<button data-action="finish-login" data-id="'+a.id+'" class="primary">保存登录并查询</button>':'<button data-action="login" data-id="'+a.id+'" '+(!data.login_available||!a.enabled||a.job||a.pool_busy?'disabled':'')+'>打开登录窗口</button><button data-action="probe" data-id="'+a.id+'" '+(!a.enabled||a.job||a.pool_busy?'disabled':'')+'>查询额度</button>')+
+      '<button data-action="edit" data-id="'+a.id+'" '+(a.login_open||a.job||a.pool_busy?'disabled':'')+'>编辑</button><button data-action="toggle" data-enabled="'+a.enabled+'" data-id="'+a.id+'" '+(a.login_open||a.job||a.pool_busy?'disabled':'')+'>'+(a.enabled?'停用':'启用')+'</button></div>'+
       '<p class="account-note">账号 ID：'+a.id+'</p></article>';
   }).join('');
 }
@@ -65,14 +68,14 @@ $('add-form').addEventListener('submit',async e=>{e.preventDefault();try{await a
 $('edit-cancel').onclick=()=>$('edit-dialog').close();
 $('edit-form').addEventListener('submit',async e=>{
   e.preventDefault();$('edit-save').disabled=true;$('edit-error').textContent='';
-  try{await api('accounts/'+editingId,'PATCH',{label:$('edit-label').value,notes:$('edit-notes').value});$('edit-dialog').close();await update();notice('名称和备注已保存。');}
+  try{const folder=$('edit-folder').value.trim();if(folder && folder!==poolState?.folders[editingId])await api('pool/accounts/'+editingId+'/folder','POST',{folder_id:folder});await api('accounts/'+editingId,'PATCH',{label:$('edit-label').value,notes:$('edit-notes').value});$('edit-dialog').close();await update();await updatePool();notice('账号设置已保存。');}
   catch(err){$('edit-error').textContent=err.message;}finally{$('edit-save').disabled=false;}
 });
 $('cards').addEventListener('click',async e=>{
   const button=e.target.closest('button[data-action]');if(!button)return;
   if(button.dataset.action==='edit'){
     const account=accounts.find(a=>a.id===button.dataset.id);if(!account)return;
-    editingId=account.id;$('edit-label').value=account.label;$('edit-notes').value=account.notes||'';$('edit-error').textContent='';$('edit-dialog').showModal();return;
+    editingId=account.id;$('edit-folder').value=poolState?.folders[account.id]||'';$('edit-label').value=account.label;$('edit-notes').value=account.notes||'';$('edit-error').textContent='';$('edit-dialog').showModal();return;
   }
   button.disabled=true;
   try{
@@ -82,6 +85,19 @@ $('cards').addEventListener('click',async e=>{
     await update();notice(action==='login'?'请在独立浏览器中登录，完成后回到这里保存。':'操作已完成。');
   }catch(err){notice(err.message,true);button.disabled=false;}
 });
+const poolLabels={queued:'等待调度',waiting_account:'等待可用账号',waiting_drive:'等待网盘授权',uploading:'上传交接文件',upload_failed:'上传失败，原账号已暂停',ready:'待执行程序领取',running:'执行中',pause_requested:'等待执行程序暂停并保存进度',finalizing:'上传最终成果',completion_upload_failed:'最终成果上传失败，等待重试',completed:'已完成',cancelled:'已取消'};
+async function updatePool(){
+  const sequence=++poolSequence;
+  let data;try{data=await api('pool','GET',undefined,()=>sequence===poolSequence);}catch(err){if(sequence!==poolSequence)return;throw err;}
+  if(sequence!==poolSequence)return;poolState=data;
+  $('pool-summary').textContent=(data.drive_configured?'网盘授权已配置（目录权限以实际请求为准）':'网盘授权未配置：请按 README 配置 OAuth')+' · '+Object.keys(data.folders).length+' 个目录 · '+data.documents.length+' 份资料 · 每天北京时间 '+data.sync_hour+':00 后同步 · 最近成功 '+(data.last_sync_date||'尚无记录')+(data.sync_error?' · '+data.sync_error:'');
+  $('pool-tasks').innerHTML=data.tasks.map(t=>'<div class="panel"><strong>'+escapeHTML(t.prompt.slice(0,100))+'</strong><p>'+escapeHTML(poolLabels[t.status]||t.status)+' · 账号 '+escapeHTML(accounts.find(a=>a.id===t.account_id)?.label||t.account_id||'待分配')+' · 版本 '+t.revision+'</p>'+(t.error?'<p class="error-box">'+escapeHTML(t.error)+'</p>':'')+(t.file?'<a target="_blank" rel="noopener" href="'+escapeHTML(t.file.url)+'">查看网盘交接文件</a>':'')+'<p class="muted">任务 ID：'+t.id+' · 已交接 '+Math.max(0,t.history.length-1)+' 次</p>'+(!['running','pause_requested','completed','cancelled'].includes(t.status)?'<button data-cancel-task="'+t.id+'">取消任务</button>':'')+'</div>').join('');
+}
+$('task-form').addEventListener('submit',async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{await api('pool/tasks','POST',{prompt:$('task-prompt').value});e.target.reset();await api('pool/tick','POST',{});await updatePool();notice('任务已保存，执行程序接入后可领取。');}catch(err){notice(err.message,true);}finally{button.disabled=false;}});
+$('document-form').addEventListener('submit',async e=>{e.preventDefault();const button=e.target.querySelector('button');button.disabled=true;try{await api('pool/documents','POST',{title:$('document-title').value,content:$('document-content').value});e.target.reset();await updatePool();notice('资料已保存，将在每日同步时上传，也可立即同步。');}catch(err){notice(err.message,true);}finally{button.disabled=false;}});
+for(const [id,path] of [['pool-sync','sync'],['pool-tick','tick']])$(id).onclick=async()=>{$(id).disabled=true;try{await api('pool/'+path,'POST',{});await updatePool();notice('账号池状态已更新。');}catch(err){notice(err.message,true);await updatePool().catch(()=>{});}finally{$(id).disabled=false;}};
+$('pool-tasks').onclick=async e=>{const button=e.target.closest('[data-cancel-task]');if(!button)return;button.disabled=true;try{await api('pool/tasks/'+button.dataset.cancelTask+'/cancel','POST',{});await updatePool();}catch(err){notice(err.message,true);button.disabled=false;}};
 update().catch(err=>notice(err.message,true));
-setInterval(async()=>{if(polling)return;polling=true;try{await update();}catch(err){notice(err.message,true);}finally{polling=false;}},5000);
+updatePool().catch(err=>notice(err.message,true));
+setInterval(async()=>{if(polling)return;polling=true;try{await update();await updatePool();}catch(err){notice(err.message,true);}finally{polling=false;}},5000);
 </script></body></html>
