@@ -85,7 +85,7 @@ $('cards').addEventListener('click',async e=>{
     await update();notice(action==='login'?'请在独立浏览器中登录，完成后回到这里保存。':'操作已完成。');
   }catch(err){notice(err.message,true);button.disabled=false;}
 });
-const poolLabels={queued:'等待调度',waiting_account:'等待可用账号',waiting_drive:'等待网盘授权',uploading:'上传交接文件',upload_failed:'上传失败，原账号已暂停',ready:'待执行程序领取',running:'执行中',pause_requested:'等待执行程序暂停并保存进度',finalizing:'上传最终成果',completion_upload_failed:'最终成果上传失败，等待重试',completed:'已完成',cancelled:'已取消'};
+const poolLabels={queued:'等待调度',waiting_account:'等待可用账号',waiting_drive:'等待网盘授权',checkpoint_pending:'备份暂停进度',checkpoint_upload_failed:'暂停进度备份失败，等待重试',uploading:'上传交接文件',upload_failed:'上传失败，原账号已暂停',ready:'待执行程序领取',running:'执行中',pause_requested:'等待执行程序暂停并保存进度',finalizing:'上传最终成果',completion_upload_failed:'最终成果上传失败，等待重试',completed:'已完成',cancelled:'已取消'};
 async function updatePool(){
   const sequence=++poolSequence;
   let data;try{data=await api('pool','GET',undefined,()=>sequence===poolSequence);}catch(err){if(sequence!==poolSequence)return;throw err;}

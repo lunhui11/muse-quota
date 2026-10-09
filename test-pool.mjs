@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { createService } from './server.mjs';
 import { createPool } from './pool.mjs';
 import { DriveStore } from './drive.mjs';
 import { chromium } from 'playwright';
 
-const temporary=await mkdtemp('/tmp/muse-pool-test-');
+const temporary=await mkdtemp(join(tmpdir(),'muse-pool-test-'));
 const uploads=new Map();let failFolder=null;let writes=0;
 const drive={configured:()=>true,checkFolder:async()=>{},put:async(folder,key,content)=>{
   if(folder===failFolder)throw new Error('模拟网盘上传失败');
@@ -68,7 +69,7 @@ try {
   assert.ok(uploads.has('folder3/result-'+t.id));
   assert.equal(JSON.parse(await readFile(join(temporary,'pool-state.json'),'utf8')).tasks[0].status,'completed');
   assert.equal((await api('status')).data.accounts.find(a=>a.id===ids[2]).pool_busy,false);
-  browser=await chromium.launch({headless:true});
+  browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL || (process.platform==='win32'?'chrome':undefined),headless:true});
   const page=await browser.newPage();const pageErrors=[];page.on('pageerror',e=>pageErrors.push(e.message));
   await page.goto(base);
   await page.getByRole('heading',{name:'任务账号池',exact:true}).waitFor();

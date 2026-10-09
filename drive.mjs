@@ -5,7 +5,8 @@ import { GoogleAuth } from 'google-auth-library';
 export class DriveStore {
   constructor({ env = process.env, fetcher = fetch } = {}) { this.env = env; this.fetcher = fetcher; }
   credentialFile() { const path=this.env.DRIVE_CREDENTIALS_FILE||this.env.GOOGLE_APPLICATION_CREDENTIALS;return path&&existsSync(path)?path:null; }
-  configured() { return ['DRIVE_OAUTH_CLIENT_ID','DRIVE_OAUTH_CLIENT_SECRET','DRIVE_OAUTH_REFRESH_TOKEN'].every(k=>this.env[k])||!!this.credentialFile(); }
+  oauthConfigured() { return ['DRIVE_OAUTH_CLIENT_ID','DRIVE_OAUTH_CLIENT_SECRET','DRIVE_OAUTH_REFRESH_TOKEN'].every(k=>this.env[k]); }
+  configured() { return this.oauthConfigured()||!!this.credentialFile(); }
   async request(url, options = {}) {
     const response = await this.fetcher(url, { ...options, signal: AbortSignal.timeout(30000) });
     if (!response.ok) throw new Error(`Google Drive 请求失败（HTTP ${response.status}）；请检查授权、目录权限和网络。`);
@@ -13,7 +14,7 @@ export class DriveStore {
   }
   async token() {
     if (!this.configured()) throw new Error('请先配置 Google Drive OAuth 授权。');
-    if(!this.env.DRIVE_OAUTH_REFRESH_TOKEN&&this.credentialFile()){
+    if(!this.oauthConfigured()&&this.credentialFile()){
       this.auth ||= new GoogleAuth({keyFilename:this.credentialFile(),scopes:['https://www.googleapis.com/auth/drive']});
       try{const token=await this.auth.getAccessToken();if(!token)throw new Error();return token;}
       catch{throw new Error('Google 凭据未能取得 Drive 访问令牌，请检查授权范围和网络。');}

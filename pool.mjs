@@ -12,13 +12,19 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
   try{state=JSON.parse(await readFile(path,'utf8'));}
   catch(e){if(e.code!=='ENOENT')throw new Error('账号池数据损坏，请检查备份。');state={folders:{},tasks:[],documents:[],last_sync_date:null,sync_error:null};}
   if(!state.folders||!Array.isArray(state.tasks)||!Array.isArray(state.documents))throw new Error('账号池数据格式无效。');
-  let tail=Promise.resolve(), pendingTick=null;
-  const save=async()=>{await writeFile(path+'.tmp',JSON.stringify(state,null,2),{mode:0o600});await rename(path+'.tmp',path);};
+  let tail=Promise.resolve(), pendingTick=null, committedState=structuredClone(state);
+  const save=async()=>{
+    const snapshot=structuredClone(state);
+    try{
+      await writeFile(path+'.tmp',JSON.stringify(snapshot,null,2),{mode:0o600});
+      await rename(path+'.tmp',path);committedState=snapshot;
+    }catch(e){state=structuredClone(committedState);throw e;}
+  };
   function serial(fn){const result=tail.catch(()=>{}).then(fn);tail=result;return result;}
-  async function change(fn){const before=structuredClone(state);try{const result=await fn();await save();return structuredClone(result);}catch(e){state=before;throw e;}}
+  async function change(fn){const before=structuredClone(state);let saving=false;try{const result=await fn();saving=true;await save();return structuredClone(result);}catch(e){if(!saving)state=before;throw e;}}
   function task(id){const t=state.tasks.find(t=>t.id===id);if(!t)throw error('任务不存在。',404);return t;}
   const active=t=>!['completed','cancelled'].includes(t.status);
-  function available(exclude=null){return accounts().filter(a=>a.id!==exclude&&a.eligible_for_new_requests&&state.folders[a.id]&&!state.tasks.some(t=>active(t)&&t.account_id===a.id));}
+  function available(exclude=null,taskId=null){return accounts().filter(a=>a.id!==exclude&&a.eligible_for_new_requests&&state.folders[a.id]&&!state.tasks.some(t=>t.id!==taskId&&active(t)&&t.account_id===a.id));}
   function view(){return structuredClone({drive_configured:!!drive.configured(),sync_hour:syncHour,...state});}
   async function syncDocuments(targets=accounts().filter(a=>a.enabled&&state.folders[a.id])) {
     if(state.documents.length&&!drive.configured())throw error('请先配置 Google Drive OAuth 授权。',409);
@@ -32,10 +38,10 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
   async function assign(t,exclude=null){
     const list=accounts(),start=list.findIndex(a=>a.id===exclude);
     const position=a=>list.findIndex(item=>item.id===a.id);
-    const candidates=available(exclude).sort((a,b)=>((position(a)-start-1+list.length)%list.length)-((position(b)-start-1+list.length)%list.length));
-    const next=candidates[0];
-    if(!next){t.status='waiting_account';t.error='没有额度新鲜且已绑定网盘目录的空闲账号。';return;}
-    if(!drive.configured()){t.status='waiting_drive';t.error='请先配置 Google Drive OAuth 授权。';return;}
+    const candidates=available(exclude,t.id).sort((a,b)=>((position(a)-start-1+list.length)%list.length)-((position(b)-start-1+list.length)%list.length));
+    const next=candidates[0]||available(null,t.id).find(a=>a.id===exclude);
+    if(!next){t.status='waiting_account';t.error='没有额度新鲜且已绑定网盘目录的空闲账号。';await save();return;}
+    if(!drive.configured()){t.status='waiting_drive';t.error='请先配置 Google Drive OAuth 授权。';await save();return;}
     t.status='uploading';t.target_account_id=next.id;await save();
     try{
       await syncDocuments([next]);
@@ -49,6 +55,14 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
     }catch(e){t.status='upload_failed';t.error=e.message;}
     await save();
   }
+  async function backupCheckpoint(t){
+    try{
+      if(!state.folders[t.account_id]||!drive.configured())throw new Error('暂停进度尚未上传，请检查源账号的网盘授权和目录。');
+      t.checkpoint_file=await drive.put(state.folders[t.account_id],'checkpoint-'+t.id+'-'+t.revision,JSON.stringify({schema_version:1,task_id:t.id,prompt:t.prompt,revision:t.revision,account_id:t.account_id,checkpoint:t.checkpoint}));
+      t.status='queued';t.error=null;
+    }catch(e){t.status='checkpoint_upload_failed';t.error=e.message;}
+    await save();
+  }
   async function finalize(t){
     try{
       if(!state.folders[t.account_id]||!drive.configured())throw new Error('任务结果尚未上传，请检查网盘授权和目录。');
@@ -59,6 +73,7 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
   }
   async function cycle(){
     for(const t of state.tasks){
+      if(['checkpoint_pending','checkpoint_upload_failed'].includes(t.status))await backupCheckpoint(t);
       if(['finalizing','completion_upload_failed'].includes(t.status))await finalize(t);
       if(t.status==='ready'){
         const a=accounts().find(a=>a.id===t.account_id);
@@ -86,13 +101,14 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
     usingProfile: id=>state.tasks.some(t=>t.account_id===id&&['running','pause_requested'].includes(t.status)),
     validateWorker(id,data){const t=task(id);if(!['running','pause_requested'].includes(t.status)||t.account_id!==data.account_id||t.revision!==data.revision)throw error('旧账号或旧版本不能更新任务。',409);},
     async recordQuota(id,data,apply){return serial(async()=>{this.validateWorker(id,data);await apply();await cycle();});},
-    async cancel(id){return serial(()=>change(()=>{const t=task(id);if(['running','pause_requested'].includes(t.status))throw error('请先让执行程序暂停并提交进度，再取消任务。',409);t.status='cancelled';t.error=null;return t;}));},
+    async cancel(id){return serial(()=>change(()=>{const t=task(id);if(t.status==='completed')throw error('已完成的任务不能取消。',409);if(['running','pause_requested'].includes(t.status))throw error('请先让执行程序暂停并提交进度，再取消任务。',409);t.status='cancelled';t.error=null;return t;}));},
     async bind(id,folder){return serial(()=>change(async()=>{
       if(!accounts().some(a=>a.id===id))throw error('账号不存在。',404);
       if(state.tasks.some(t=>active(t)&&(t.account_id===id||t.target_account_id===id)))throw error('该账号有未结束的任务，暂时不能更改网盘目录。',409);
       let value=text(folder,'网盘目录',256);if(value.startsWith('https://')){let url;try{url=new URL(value);}catch{throw error('网盘目录链接无效。');}if(url.hostname!=='drive.google.com')throw error('请使用 Google Drive 目录链接。');value=url.pathname.match(/\/folders\/([A-Za-z0-9_-]+)/)?.[1]||'';}
       if(!/^[A-Za-z0-9_-]{5,200}$/.test(value))throw error('请输入网盘目录 ID 或目录链接。');
       if(drive.configured())try{await drive.checkFolder(value);}catch(e){throw error(e.message,409);}
+      if(state.folders[id]!==value)state.last_sync_date=null;
       state.folders[id]=value;return {folder_id:value,verified:!!drive.configured()};
     }));},
     async addDocument(data){return serial(()=>change(()=>{const d={id:randomBytes(6).toString('hex'),title:text(data.title,'资料标题',120),content:text(data.content,'资料内容'),updated_at:now().toISOString(),files:{}};state.documents.push(d);state.last_sync_date=null;return d;}));},
@@ -111,8 +127,10 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
         if(!Array.isArray(data.artifacts)||data.artifacts.length>10)throw error('工作成果最多包含 10 个文本文件。');
         artifacts=data.artifacts.map(file=>({name:text(file?.name,'成果文件名',120),content:text(file?.content,'成果内容',20000)}));
       }
-      await change(()=>{t.checkpoint={summary,next_steps:nextSteps,artifacts,updated_at:now().toISOString()};t.status=data.completed===true?'finalizing':'queued';t.error=null;});
-      if(t.status==='queued')await assign(t,t.account_id);else await finalize(t);return structuredClone(t);
+      await change(()=>{t.checkpoint={summary,next_steps:nextSteps,artifacts,updated_at:now().toISOString()};t.status=data.completed===true?'finalizing':'checkpoint_pending';t.error=null;});
+      if(t.status==='checkpoint_pending')await backupCheckpoint(t);
+      if(t.status==='queued')await assign(t,t.account_id);else if(t.status==='finalizing')await finalize(t);
+      return structuredClone(t);
     });},
     async sync(){return serial(async()=>{try{await syncDocuments();state.last_sync_date=now().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});state.sync_error=null;await save();return view();}catch(e){state.sync_error=e.message;await save();throw error(e.message,409);}});},
     tick:()=>pendingTick||(pendingTick=serial(cycle).finally(()=>{pendingTick=null;})),
