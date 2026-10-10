@@ -147,6 +147,7 @@ DISPLAY 应是服务器本机的桌面显示编号，例如 :1。若上面的 te
 | POST | /api/accounts/ID/finish-login | 保存登录、关闭窗口并排队检测 |
 | PATCH | /api/accounts/ID | 修改 label、notes 或 enabled: true/false |
 | GET | /healthz | 不含账号资料的健康状态 |
+| GET | /api/deployment | 运行实例的服务根目录、来源提交与启动时源码指纹 |
 
 每条结果包含 account_id、quota、status、stale、checked_at、last_success_at、error、eligible_for_new_requests 和 reason。后续聊天网关可以读取这份建议，但不能据此保证单个任务的额度充足，也不能假设跨账号拥有同一聊天历史或文件授权。
 
@@ -176,3 +177,7 @@ npm test
 已提供可运行的 [微信适配框架](integrations/wechat/README.md)：默认任务模式直接调用现有账号池，普通聊天模式可选 Gadget。支持微信接单、幂等创建、查询/取消、成果回传、持久状态与预检。请从 GitHub 拉取本次更新后的最新源码；[给 Muse 的最终接手任务](docs/MUSE_HANDOFF.md) 包含部署、真实授权和端到端验收要求。
 
 交接源码可用 `python3 scripts/build_handoff.py` 打包，默认保存在被忽略的 work/，不会带上账号会话或凭据。微信桥接是独立 Python 可选组件，不增加原 Node 启动的依赖。真实扫码和 Muse/Drive 联调仍由实际部署设备完成。
+
+服务器接入、Git/复制部署区别和只读巡检步骤见 [服务器维护说明](docs/SERVER_ACCESS.md)。`python3 scripts/live_status.py` 查询运行实例，不能用工作区已拉取的提交号代替实际服务版本；巡检不启动执行器。
+
+通过 GitHub Actions 的 SSH 接入步骤见 [GitHub SSH 检查说明](docs/GITHUB_SSH.md)。已提供手动审批的只读工作流，先验证连接和现有服务状态，再另行安排受控部署；不需要服务器安装 Actions runner 或 Tailscale。

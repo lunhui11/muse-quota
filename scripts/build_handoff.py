@@ -3,15 +3,17 @@
 import argparse
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 import zipfile
 
 ROOT=Path(__file__).resolve().parents[1]
 ROOT_FILES={'.gitignore','.dockerignore','.env.example','Dockerfile','compose.yaml','Start.ps1',
             'package.json','package-lock.json','README.md','design.md','implementation-plan.md','audit-report.md',
-            'server.mjs','probe.mjs','drive.mjs','pool.mjs','muse.mjs','executor.mjs',
-            'test.mjs','test-pool.mjs','test-pool-regressions.mjs','test-executor.mjs'}
-BLOCKED={'data','work','node_modules','.git','.venv','venv','__pycache__','.pytest_cache'}
+            'server.mjs','probe.mjs','drive.mjs','pool.mjs','muse.mjs','executor.mjs','deployment.mjs',
+            'test.mjs','test-pool.mjs','test-pool-regressions.mjs','test-executor.mjs','test-deployment.mjs'}
+BLOCKED={'data','work','node_modules','.git','.venv','venv','__pycache__','.pytest_cache',
+         '.env','credentials.json','relay.env','relay.sqlite3','state.json'}
 SUFFIXES={'.mjs','.py','.md','.sh','.toml','.service','.json','.example'}
 
 
@@ -36,6 +38,9 @@ def sources():
     # Include the static dashboard explicitly; do not include arbitrary runtime HTML exports.
     dashboard=ROOT/'public/index.html'
     if dashboard.is_file():selected.append(dashboard)
+    # Include this reviewed manual inspection workflow, not arbitrary hidden files.
+    workflow=ROOT/'.github/workflows/server-inspect.yml'
+    if workflow.is_file():selected.append(workflow)
     for entry in selected:
         if entry.is_symlink() or ROOT not in entry.resolve().parents:
             raise ValueError('Refuse source path outside the project')
@@ -45,6 +50,13 @@ def sources():
 def build(output):
     files=sources()
     manifest={'format':1,'contains':'source_only','files':{}}
+    try:
+        commit=subprocess.check_output(['git','-C',str(ROOT),'rev-parse','--verify','HEAD'],text=True,timeout=2).strip()
+        changes=subprocess.check_output(['git','-C',str(ROOT),'status','--porcelain','--untracked-files=normal','--',
+                                        *[str(path.relative_to(ROOT)) for path in files]],text=True,timeout=2)
+        manifest.update(source_commit=commit,source_modified=bool(changes.strip()))
+    except (OSError,subprocess.SubprocessError):
+        manifest.update(source_commit=None,source_modified=None)
     output=Path(output).resolve()
     output.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as archive:

@@ -69,3 +69,33 @@
 - 微信适配层 30 项测试通过，包含真实本机 Node HTTP 流程的微信接单→1 号阈值暂停→2 号续做→结果回传；Muse、Drive、腾讯响应和 Gadget 都是夹具。扫码包装测试生成的是测试二维码，不是实际登录二维码。
 - 已重启本地 Node 服务并通过健康/面板/API 检查。安装版本 doctor 确认 pool_api/pool_idempotency 为 true；allowlist/微信凭据为空、可用账号 0、执行器关闭，ready_to_run 为 false（返回 1 符合预期）。drive_configured 只表示配置存在，不代表实际授权有效。
 - 真实设备部署、Muse 登录、Google 授权、微信扫码和现场端到端验证尚未完成，交由 Muse 按 docs/MUSE_HANDOFF.md 接手。最新代码没有提交或推送到 GitHub，交接必须使用源码包。
+
+## 维护接入与运行版本检查（2026-10-10，本轮云工作区）
+
+历史服务器联调事实以 docs/LIVE_HANDOFF_2026-10-10.md 为准；以上各阶段的本地结果不代替实机状态。本轮未连接生产服务器、未重启服务、未启动任务、未推送 GitHub。
+
+- 检查目录是 /workspace/muse-quota，GitHub 仓库为 lunhui11/muse-quota。fetch 成功，HEAD 和 origin/main 均为 fb5064a4f352fb8662cbb6c2ed7f2af1f0b4f349；实机交接文档存在。新增维护改动尚未提交。
+- 新增启动时运行身份快照及只读 /api/deployment，区分根目录 Git 检出、已校验源码包和未知复制部署；父目录 Git 不冒充服务 Git，修改磁盘文件不会改写旧进程身份。固定源码文件指纹不包含凭据、数据或浏览器会话。Docker 复制列表已补模块，镜像构建仍 pending。
+- 新增 scripts/live_status.py，仅请求回环 API 的 GET，输出白名单元数据。执行器未确认关闭、运行/待暂停/需人工检查任务、未知任务状态、浏览器占用、无效额度结构或旧服务缺少版本端点时阻止可更新状态。空闲快照不代表备份或授权更新。
+- 维护公钥与服务器侧 Muse 接入提示词已生成，保存在仓库外；私钥未输出、未打包。实际 SSH 用户大小写、主机指纹、授权公钥安装、Tailnet 地址和服务根目录均 pending。
+- 当前平台策略 vpn_configured=false，未配置 TCP grant；公网 SSH 目标不满足受控私网 CONNECT 条件。没有尝试绕过网络策略。需要平台侧 VPN 与精确 TCP 授权，并使用新配置版本的替换环境；保存草稿不等于连接成功。
+- install_script、start_skill 和非敏感服务器选择器已保存到环境草稿并读回核对；既有 Google 域名与凭据要求保留。安装脚本在当前工作区实际执行完成，退出 0：npm test 全部通过，Node runner 38 项、0 失败/跳过；微信 30 项；新增 Python 巡检 7 项。浏览器、Muse、Drive、微信测试响应均为夹具，不消耗实机账号额度。
+- 源码交接包清单逐文件 SHA-256 检查通过，解包后身份识别为 source_bundle，runtime_modified=true，来源基线为上述提交；不把未提交改动宣称为 GitHub 已发布版本。包不含 .env、data、work、依赖缓存、SSH 密钥或实际凭据。
+- 实机备份、服务/任务状态、代码更新、OAuth 可用性、两账号官方额度与 Muse 内 Drive 连接、真实 1→2 续做、微信回传、重启恢复和旧消息去重：全部 pending。接入后按 docs/SERVER_ACCESS.md 受控检查，执行器保持关闭，并保留 wechat-mengmeng。
+
+## GitHub Actions SSH 接入框架（2026-10-10，本地待发布）
+
+- 用户选择撤销今晚的 Tailscale/Codex 公钥接入，保留原项目、数据和微信服务；回退由已能操作服务器的 Muse 执行，当前工作区没有实际服务器清理记录。更早的实机交接确有部署和验收结果，但记录未完整注明操作者和传输通道，不能根据本轮 SSH 失败断言历史上从未接入。
+- 按用户提出的 GitHub Actions SSH 方式，新增仅 main 手动触发、server-maintenance 环境审批的工作流。使用 GitHub 托管 Ubuntu 执行机，无需服务器 self-hosted runner 或 Tailscale。首个任务只读检查，不部署代码、不安装依赖、不重启服务、不启动执行器。
+- actions/checkout v4.2.2 的固定 SHA 通过官方仓库 ls-remote 核对。SSH 主机指纹不匹配时阻止认证；私钥仅在执行机私有临时文件中使用，子进程环境和公开日志不携带密钥。仅上传检查源码到独立的服务器临时目录，精确校验路径后清除，不覆盖部署目录。
+- 公开报告不含任务/账号 ID、提示词、具体额度、错误原文或凭据。旧 API 版本身份缺失与磁盘源码不可读保留 pending；只读检查通过也不代表备份或更新授权。
+- 本地 stdlib Python 回归共 23 项通过（只读巡检 7、Actions 摘要 9、SSH 协议模拟 7），包括指纹不匹配、输入注入拒绝、子进程密钥隔离、复制失败清理、异常临时路径拒绝及清理失败 pending。工作流 YAML 已解析并核对手动/main/审批/read-only 权限结构。这些没有执行真实 GitHub→服务器 SSH。
+- GitHub Git 读取正常，目前远端仅发现 main；已取回的仓库历史没有 .github 路径。GitHub REST 工作流与 Secret 元数据请求被本环境代理 403 拒绝，不能推断以前是否在其他仓库配置过通道，或当前仓库 Secret 不存在。
+- 新工作流、检查脚本和 docs/GITHUB_SSH.md 尚未上传 GitHub。旧 Actions 运行链接、SSH Secret 名称复用、环境配置、第一次真实 run、服务器身份和状态结果均 pending；没有声称通道已打通。
+<!-- GitHub configuration preparation: 2026-10-10 -->
+
+## 2026-10-10 GitHub SSH 自动配置准备
+
+已增加 `scripts/configure_github_ssh.py`：通过官方 API 检查管理员权限，创建 main 分支限定及所有者审批的维护环境，设置非敏感连接变量，重新读取验证；仅列 SSH Secret 名称，不读取或上传私钥，不派发工作流，不操作服务器。已有环境保护不覆盖，网络/权限/缺少密钥状态保留 pending。
+
+本地 `python3 -m unittest discover -s scripts -p 'test_*.py' -v` 实测 31 项通过。凭据模式扫描和 `git diff --check` 通过。已在云环境配置草稿添加 `api.github.com`，保留 Google 域名；保存不等于实例策略生效。真实 GitHub 管理 API、GitHub-hosted runner SSH 和服务器检查均 pending，未重启服务或启动执行器。
