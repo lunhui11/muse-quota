@@ -73,7 +73,8 @@ export async function createExecutor({dataDir,pool,drive,account,profile,recordQ
       const documents=[];
       for(const reference of bundle.documents) {
         const d=await drive.get(reference.file);
-        if(d?.schema_version!==1||d.id!==reference.id||d.title!==reference.title||!nonempty(d.content,10000))
+        const sameSource=d?.id===reference.id||(typeof d?.source_id==='string'&&d.source_id&&reference.id==='source-'+d.source_id);
+        if(d?.schema_version!==1||!sameSource||d.title!==reference.title||!nonempty(d.content,10000))
           throw issue('网盘资料内容与交接包不一致，未发送任务。');
         documents.push({title:d.title,content:d.content});
       }

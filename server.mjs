@@ -74,6 +74,7 @@ export async function createService(options = {}) {
   const pool = await createPool({
     dataDir, drive,
     syncHour: Number(process.env.DAILY_SYNC_HOUR ?? 8),
+    importDrive: options.importDrive ?? (!options.drive && process.env.DRIVE_IMPORT_ENABLED === '1'),
     accounts: () => state.accounts.map(a => {
       const view = quotaView(a, state.snapshots[a.id], { intervalMinutes, threshold, busy: jobs.has(a.id) || logins.has(a.id) });
       return { ...publicAccount(a), ...view, pause_at_percent: threshold, quota_usable: a.enabled && !view.stale };
@@ -246,20 +247,30 @@ export async function createService(options = {}) {
         const data = await body(req);
         if (jobs.has(a.id) || logins.has(a.id) || pool.usingProfile(a.id) || executor.usingProfile(a.id)) throw Object.assign(new Error('账号正在操作，请稍后修改。'), { status: 409 });
         const keys = Object.keys(data);
-        if (!keys.length || keys.some(key => !['enabled', 'label', 'notes'].includes(key)))
-          throw Object.assign(new Error('仅支持修改名称、备注和启用状态。'), { status: 400 });
+        if (!keys.length || keys.some(key => !['enabled', 'label', 'notes', 'proxy_server', 'proxy_username_env', 'proxy_password_env'].includes(key)))
+          throw Object.assign(new Error('账号编辑字段无效。'), { status: 400 });
         if ('enabled' in data && typeof data.enabled !== 'boolean')
           throw Object.assign(new Error('enabled 需要布尔值。'), { status: 400 });
         if ('label' in data && (typeof data.label !== 'string' || !data.label.trim() || data.label.length > 80))
           throw Object.assign(new Error('账号名称需要 1–80 个字符。'), { status: 400 });
         if ('notes' in data && (typeof data.notes !== 'string' || data.notes.length > 1000))
           throw Object.assign(new Error('备注最多 1000 个字符。'), { status: 400 });
+        for (const key of ['proxy_server', 'proxy_username_env', 'proxy_password_env']) {
+          if (key in data && (typeof data[key] !== 'string' || data[key].length > 256))
+            throw Object.assign(new Error('代理配置格式无效。'), { status: 400 });
+        }
+        const next = { ...a };
+        for (const key of ['proxy_server', 'proxy_username_env', 'proxy_password_env'])
+          if (key in data) next[key] = data[key].trim();
+        try { proxyOptions(next); } catch (e) { throw Object.assign(e, { status: 400 }); }
         await save(() => {
           if (jobs.has(a.id) || logins.has(a.id) || pool.usingProfile(a.id) || executor.usingProfile(a.id)) throw Object.assign(new Error('账号正在操作，请稍后修改。'), { status: 409 });
           const previous = { ...a };
           if ('enabled' in data) a.enabled = data.enabled;
           if ('label' in data) a.label = data.label.trim();
           if ('notes' in data) a.notes = data.notes.trim();
+          for (const key of ['proxy_server', 'proxy_username_env', 'proxy_password_env'])
+            if (key in data) a[key] = data[key].trim();
           return () => {
             for (const key of keys) { if (key in previous) a[key] = previous[key]; else delete a[key]; }
           };

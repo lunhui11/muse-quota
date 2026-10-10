@@ -1,5 +1,7 @@
 # 给 Muse 的最终接手任务
 
+这份文档保留最初的接手要求；2026-10-10 的实际部署结果、暂停状态和剩余工作以 [实机联调交接](LIVE_HANDOFF_2026-10-10.md) 为准。
+
 这份说明对应本次 GitHub 更新及源码交接包。接手时拉取仓库 main 最新版本，并检查 integrations/wechat 和 executor.mjs 均存在。微信协议复用 huangzuomin/wechat-muse-bridge，适配层位于 integrations/wechat，详情见该目录 README。
 
 ## 已完成的框架

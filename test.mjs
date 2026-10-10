@@ -145,7 +145,7 @@ try {
   assert.equal(list.find(a=>a.id===accountB.id).quota.weekly_used_pct,73.5);
   assert.ok([400,404].includes((await api('accounts/%2e%2e/probe','POST',{})).status));
 
-  browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL || (process.platform==='win32'?'chrome':undefined),headless:true});
+  browser=await chromium.launch({executablePath:process.env.BROWSER_EXECUTABLE_PATH||undefined,channel:process.env.BROWSER_EXECUTABLE_PATH?undefined:process.env.BROWSER_CHANNEL || (process.platform==='win32'?'chrome':undefined),headless:true});
   const page=await browser.newPage({viewport:{width:1280,height:900}});
   const pageErrors=[];page.on('pageerror',e=>pageErrors.push(e.message));
   const apiAuthorizations=[];
@@ -166,7 +166,9 @@ try {
   assert.equal(edited.label,'日常任务 A');assert.equal(edited.enabled,true);assert.equal(edited.quota.weekly_used_pct,12.5);
   assert.equal((await api('accounts/'+accountA.id,'PATCH',{label:'不应保存',notes:'x'.repeat(1001)})).status,400);
   assert.equal((await api('accounts/'+accountA.id,'PATCH',{label:'   '})).status,400);
-  assert.equal((await api('accounts/'+accountA.id,'PATCH',{proxy_server:'http://localhost:8'})).status,400);
+  assert.equal((await api('accounts/'+accountA.id,'PATCH',{proxy_server:'http://u:p@localhost:8'})).status,400);
+  assert.equal((await api('accounts/'+accountA.id,'PATCH',{proxy_server:'http://localhost:8'})).status,200);
+  assert.equal((await api('status')).data.accounts.find(a=>a.id===accountA.id).proxy_server,'http://localhost:8');
   assert.equal((await api('status')).data.accounts.find(a=>a.id===accountA.id).label,'日常任务 A');
   await page.screenshot({path:join(workDir,'muse-dashboard-test.png'),fullPage:true});
   await page.setViewportSize({width:390,height:844});

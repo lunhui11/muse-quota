@@ -16,13 +16,14 @@ function snapshot(data,now) {
   }
   return {summary,next_steps:nextSteps,artifacts,updated_at:now().toISOString()};
 }
-export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()=>new Date(),syncHour=8}) {
+export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()=>new Date(),syncHour=8,importDrive=false}) {
   if(!Number.isInteger(syncHour)||syncHour<0||syncHour>23)throw error('DAILY_SYNC_HOUR 需要 0–23 的整数。');
   const path=join(dataDir,'pool-state.json');
   let state;
   try{state=JSON.parse(await readFile(path,'utf8'));}
   catch(e){if(e.code!=='ENOENT')throw new Error('账号池数据损坏，请检查备份。');state={folders:{},tasks:[],documents:[],last_sync_date:null,sync_error:null};}
   if(!state.folders||!Array.isArray(state.tasks)||!Array.isArray(state.documents))throw new Error('账号池数据格式无效。');
+  state.drive_inputs ||= {};
   let tail=Promise.resolve(), pendingTick=null, committedState=structuredClone(state);
   const save=async()=>{
     const snapshot=structuredClone(state);
@@ -36,7 +37,15 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
   function task(id){const t=state.tasks.find(t=>t.id===id);if(!t)throw error('任务不存在。',404);return t;}
   const active=t=>!['completed','cancelled'].includes(t.status);
   function available(exclude=null,taskId=null){return accounts().filter(a=>a.id!==exclude&&a.eligible_for_new_requests&&state.folders[a.id]&&!state.tasks.some(t=>t.id!==taskId&&active(t)&&t.account_id===a.id));}
-  function view(){return structuredClone({drive_configured:!!drive.configured(),sync_hour:syncHour,...state});}
+  function view(){return structuredClone({drive_configured:!!drive.configured(),drive_import_enabled:importDrive,sync_hour:syncHour,...state});}
+  const today=()=>now().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});
+  async function importInputs(a,force=false) {
+    if(!importDrive)return;
+    if(!force&&state.drive_inputs[a.id]?.date===today())return;
+    if(!drive.configured())throw error('请先配置 Google Drive OAuth 授权。',409);
+    const documents=await drive.importTextFiles(state.folders[a.id]);
+    state.drive_inputs[a.id]={date:today(),documents};
+  }
   async function syncDocuments(targets=accounts().filter(a=>a.enabled&&state.folders[a.id])) {
     if(state.documents.length&&!drive.configured())throw error('请先配置 Google Drive OAuth 授权。',409);
     if(state.documents.length&&!targets.length)throw error('请先为至少一个启用的账号绑定网盘目录。',409);
@@ -56,7 +65,8 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
     t.status='uploading';t.target_account_id=next.id;await save();
     try{
       await syncDocuments([next]);
-      const bundle={schema_version:1,task_id:t.id,prompt:t.prompt,revision:t.revision+1,from_account_id:t.account_id,to_account_id:next.id,checkpoint:t.checkpoint||null,documents:state.documents.map(d=>({id:d.id,title:d.title,file:d.files[next.id]})),created_at:now().toISOString()};
+      await importInputs(next);
+      const bundle={schema_version:1,task_id:t.id,prompt:t.prompt,revision:t.revision+1,from_account_id:t.account_id,to_account_id:next.id,checkpoint:t.checkpoint||null,documents:[...state.documents.map(d=>({id:d.id,title:d.title,file:d.files[next.id]})),...(state.drive_inputs[next.id]?.documents||[])],created_at:now().toISOString()};
       const content=JSON.stringify(bundle);
       if(t.account_id&&state.folders[t.account_id])await drive.put(state.folders[t.account_id],'handoff-'+t.id+'-'+bundle.revision,content);
       const file=await drive.put(state.folders[next.id],'handoff-'+t.id+'-'+bundle.revision,content);
@@ -97,10 +107,10 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
       }
       if(['queued','waiting_account','waiting_drive','upload_failed','uploading'].includes(t.status))await assign(t,t.account_id);
     }
-    const date=now().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});
+    const date=today();
     const hour=Number(now().toLocaleTimeString('en-GB',{timeZone:'Asia/Shanghai',hour:'2-digit',hour12:false}));
-    if(hour>=syncHour&&state.last_sync_date!==date&&state.documents.length){
-      try{await syncDocuments();state.last_sync_date=date;state.sync_error=null;}
+    if(hour>=syncHour&&state.last_sync_date!==date&&(state.documents.length||importDrive)){
+      try{await syncDocuments();for(const a of accounts().filter(a=>a.enabled&&state.folders[a.id]))await importInputs(a,true);state.last_sync_date=date;state.sync_error=null;}
       catch(e){state.sync_error=e.message;}
     }
     await save();
@@ -120,7 +130,7 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
       let value=text(folder,'网盘目录',256);if(value.startsWith('https://')){let url;try{url=new URL(value);}catch{throw error('网盘目录链接无效。');}if(url.hostname!=='drive.google.com')throw error('请使用 Google Drive 目录链接。');value=url.pathname.match(/\/folders\/([A-Za-z0-9_-]+)/)?.[1]||'';}
       if(!/^[A-Za-z0-9_-]{5,200}$/.test(value))throw error('请输入网盘目录 ID 或目录链接。');
       if(drive.configured())try{await drive.checkFolder(value);}catch(e){throw error(e.message,409);}
-      if(state.folders[id]!==value)state.last_sync_date=null;
+      if(state.folders[id]!==value){state.last_sync_date=null;delete state.drive_inputs[id];}
       state.folders[id]=value;return {folder_id:value,verified:!!drive.configured()};
     }));},
     async addDocument(data){return serial(()=>change(()=>{const d={id:randomBytes(6).toString('hex'),title:text(data.title,'资料标题',120),content:text(data.content,'资料内容'),updated_at:now().toISOString(),files:{}};state.documents.push(d);state.last_sync_date=null;return d;}));},
@@ -166,7 +176,7 @@ export async function createPool({dataDir,accounts,drive=new DriveStore(),now=()
       if(t.status==='finalizing')await finalize(t);else{await backupCheckpoint(t);if(t.status==='queued')await assign(t,t.account_id);}
       return structuredClone(t);
     });},
-    async sync(){return serial(async()=>{try{await syncDocuments();state.last_sync_date=now().toLocaleDateString('en-CA',{timeZone:'Asia/Shanghai'});state.sync_error=null;await save();return view();}catch(e){state.sync_error=e.message;await save();throw error(e.message,409);}});},
+    async sync(){return serial(async()=>{try{await syncDocuments();for(const a of accounts().filter(a=>a.enabled&&state.folders[a.id]))await importInputs(a,true);state.last_sync_date=today();state.sync_error=null;await save();return view();}catch(e){state.sync_error=e.message;await save();throw error(e.message,409);}});},
     tick:()=>pendingTick||(pendingTick=serial(cycle).finally(()=>{pendingTick=null;})),
     stop:()=>tail.catch(()=>{}),
   };

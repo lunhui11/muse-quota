@@ -6,6 +6,10 @@
 
 使用步骤、Google 授权、任务领取及续做协议见 [账号池使用说明](docs/account-pool.md)。
 
+截至 2026-10-10 的云服务器真实联调、暂停状态和后续验收步骤见 [实机交接记录](docs/LIVE_HANDOFF_2026-10-10.md)。
+
+对应的源码交接 ZIP 和 SHA-256 校验文件位于 [releases 目录](releases/)。压缩包仅含源码和文档，不含运行数据或凭据。
+
 ## Windows 使用
 
 需要 Node.js 20.12+ 和 Google Chrome。
@@ -49,11 +53,14 @@ node server.mjs
 - PAUSE_AT_PERCENT：默认 90，达到此周用量时不再建议分配新请求。
 - DATA_DIR：数据目录；默认项目里的 data。
 - BROWSER_CHANNEL：Windows 默认 chrome；Linux 默认 Playwright Chromium。
+- BROWSER_EXECUTABLE_PATH：可选，指向已有 Chrome/Chromium 的绝对路径；设置后优先于 BROWSER_CHANNEL，部署前运行测试确认兼容。
 - HOST/PORT：本地默认 127.0.0.1:8788。
 - ALLOW_LOGIN：设为 0 时禁止从面板打开交互式浏览器。
 - EXECUTOR_HEADLESS：默认 1，设为 0 时显示 Muse 执行浏览器。
 - EXECUTOR_TIMEOUT_SECONDS：默认 300，每次回复等待上限。
 - EXECUTOR_MAX_STEPS：默认 20，每次领取的执行步骤上限；达到后保存进度等待人工检查。
+- DRIVE_PROXY_URL：Google Drive OAuth 和 API 使用的 HTTP(S) 代理地址；与各 Muse 账号的浏览器代理分别配置。
+- DRIVE_IMPORT_ENABLED：设为 1 后，每天从各账号绑定目录读取 UTF-8 的 txt/md/json 文件，并把当天快照加入新任务。
 
 账号数据和浏览器会话保存在 data 目录。该目录和 .env 被排除在 Git 与 Docker 镜像之外。迁移或升级前保存该目录，不能同时让两份服务写同一目录。
 

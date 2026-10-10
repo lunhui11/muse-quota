@@ -69,7 +69,7 @@ try {
   assert.ok(uploads.has('folder3/result-'+t.id));
   assert.equal(JSON.parse(await readFile(join(temporary,'pool-state.json'),'utf8')).tasks[0].status,'completed');
   assert.equal((await api('status')).data.accounts.find(a=>a.id===ids[2]).pool_busy,false);
-  browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL || (process.platform==='win32'?'chrome':undefined),headless:true});
+  browser=await chromium.launch({executablePath:process.env.BROWSER_EXECUTABLE_PATH||undefined,channel:process.env.BROWSER_EXECUTABLE_PATH?undefined:process.env.BROWSER_CHANNEL || (process.platform==='win32'?'chrome':undefined),headless:true});
   const page=await browser.newPage();const pageErrors=[];page.on('pageerror',e=>pageErrors.push(e.message));
   await page.goto(base);
   await page.getByRole('heading',{name:'任务账号池',exact:true}).waitFor();
@@ -114,6 +114,46 @@ try {
   assert.equal(missing.view().tasks[0].status,'waiting_drive');
   await missing.addDocument({title:'资料',content:'内容'});await assert.rejects(missing.sync(),/OAuth/);
   console.log('PASS 缺少网盘授权时等待并显示错误，不伪造上传或执行成功');
+
+  const importDir=await mkdtemp(join(temporary,'import-'));
+  let importDate=new Date('2026-10-09T00:00:00Z'), imports=0;
+  const importedDrive={...drive,importTextFiles:async()=>{
+    imports++;
+    return [{id:'source-fixture',title:'today.md',file:{id:'fixture',sha256:'a'.repeat(64)}}];
+  }};
+  const imported=await createPool({dataDir:importDir,accounts:()=>[{...a,enabled:true,quota_usable:true,eligible_for_new_requests:true}],drive:importedDrive,importDrive:true,now:()=>importDate});
+  await imported.bind(a.id,'import-folder');
+  await imported.tick();assert.equal(imports,1);
+  await imported.addTask({prompt:'使用当天资料'});await imported.tick();
+  assert.equal(imported.view().tasks[0].bundle.documents[0].title,'today.md');
+  assert.equal(imports,1);
+  await imported.sync();assert.equal(imports,2);
+  importDate=new Date('2026-10-10T00:00:00Z');await imported.tick();assert.equal(imports,3);
+  assert.equal(imported.view().drive_inputs[a.id].date,'2026-10-10');
+  console.log('PASS 每日网盘输入快照、任务使用当日资料、手动刷新和次日重读');
+
+  const reader=new DriveStore({env:{}});let normalized;
+  reader.api=async path=>path.startsWith('/drive/v3/files?')
+    ? new Response(JSON.stringify({files:[
+      {id:'user-file',name:'notes.md',size:'5'},
+      {id:'internal-file',name:'handoff.json',appProperties:{muse_pool_key:'handoff-1'}},
+      {id:'other',name:'photo.png'},
+    ]}))
+    : new Response('hello');
+  reader.put=async (_folder,_key,content)=>{normalized=JSON.parse(content);return {id:'normalized-file',sha256:'a'.repeat(64)};};
+  const sources=await reader.importTextFiles('folder123');
+  assert.equal(sources.length,1);assert.equal(sources[0].title,'notes.md');
+  assert.equal(normalized.content,'hello');
+  console.log('PASS 网盘来源筛选、内部交接文件排除和 UTF-8 文本规范化（模拟 Google HTTP）');
+
+  let attempts=0;
+  const unstable=new DriveStore({env:{},fetcher:async()=>{attempts++;if(attempts===1)throw new Error('socket closed');return new Response('ok');}});
+  assert.equal(await (await unstable.request('https://www.googleapis.com/test')).text(),'ok');
+  assert.equal(attempts,2);
+  attempts=0;
+  await assert.rejects(unstable.request('https://www.googleapis.com/test',{method:'POST'}),/socket closed/);
+  assert.equal(attempts,1);
+  console.log('PASS 网盘只读请求遇到代理断连时重试一次，写入请求不自动重发');
 
   // Exercise the actual Google Drive transport with intercepted HTTP responses.
   const stored=new Map();let tokenCalls=0,corrupt=false;

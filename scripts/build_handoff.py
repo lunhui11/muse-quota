@@ -49,8 +49,10 @@ def build(output):
     output.parent.mkdir(parents=True,exist_ok=True)
     with zipfile.ZipFile(output,'w',compression=zipfile.ZIP_DEFLATED) as archive:
         for path in files:
-            relative=str(path.relative_to(ROOT))
+            relative=path.relative_to(ROOT).as_posix()
             content=path.read_bytes()
+            if path.suffix == '.sh':
+                content=content.replace(b'\r\n',b'\n')
             manifest['files'][relative]=hashlib.sha256(content).hexdigest()
             archive.writestr('muse-quota/'+relative,content)
         archive.writestr('muse-quota/HANDOFF-MANIFEST.json',json.dumps(manifest,ensure_ascii=False,indent=2))

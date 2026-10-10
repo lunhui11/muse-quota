@@ -35,9 +35,14 @@ function memoryDrive() {
   }});
   return {store,files,keys,downloads,corrupt:id=>{corrupt=id;}};
 }
-async function serviceFixture(t,{adapter,number=2,executorMaxSteps=20}={}) {
+async function serviceFixture(t,{adapter,number=2,executorMaxSteps=20,dailySource=null}={}) {
   const dataDir=await mkdtemp(join(tmpdir(),'muse-executor-'));const drive=memoryDrive();
-  let service=await createService({dataDir,seed:false,scheduler:false,drive:drive.store,adapter,executorMaxSteps,prober:async()=>({weekly_used_pct:10})});
+  if(dailySource)drive.store.importTextFiles=async folder=>{
+    const source_id='fixture-source';
+    const file=await drive.store.put(folder,'source-'+source_id,JSON.stringify({schema_version:1,title:'daily-test.md',content:dailySource,source_id}));
+    return [{id:'source-'+source_id,title:'daily-test.md',file}];
+  };
+  let service=await createService({dataDir,seed:false,scheduler:false,drive:drive.store,importDrive:!!dailySource,adapter,executorMaxSteps,prober:async()=>({weekly_used_pct:10})});
   t.after(async()=>{await service.stop();await rm(dataDir,{recursive:true,force:true});});
   await new Promise(r=>service.server.listen(0,'127.0.0.1',r));
   const api=async(path,data,method=data===undefined?'GET':'POST')=>{
@@ -103,6 +108,14 @@ test('网盘交接校验失败时不打开 Muse、不发送请求',async t=>{
   const adapter=adapterFixture();const f=await serviceFixture(t,{adapter});
   f.drive.corrupt(f.service.pool.view().tasks[0].file.id);await run(f);
   assert.equal(adapter.opens.length,0);assert.equal(f.service.pool.view().tasks[0].status,'needs_attention');assert.equal(f.service.pool.view().tasks[0].uncertain,false);
+});
+
+test('真实每日资料封装格式可由执行器校验并带入任务',async t=>{
+  const adapter=adapterFixture();const f=await serviceFixture(t,{adapter,dailySource:'今日仅测试文本资料'});
+  await run(f);
+  assert.equal(f.service.pool.view().tasks[0].status,'completed');
+  assert.equal(adapter.sends.length,1);
+  assert.match(adapter.sends[0].prompt,/今日仅测试文本资料/);
 });
 
 test('无效回复暂停并保留原文，调度和重新启动都不重复发送',async t=>{
@@ -177,7 +190,7 @@ test('下载校验拒绝变更内容、无效 JSON 和过大文件',async()=>{
 
 test('恢复界面显示原文而不执行 HTML，并提交完整进度恢复',async t=>{
   const adapter=adapterFixture({turn:async()=>'<img src=x onerror="window.injected=true">'});const f=await serviceFixture(t,{adapter});await run(f);f.service.executor.pause();
-  const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_CHANNEL||(process.platform==='win32'?'chrome':undefined)});t.after(()=>browser.close());const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
+  const browser=await chromium.launch({headless:true,executablePath:process.env.BROWSER_EXECUTABLE_PATH||undefined,channel:process.env.BROWSER_EXECUTABLE_PATH?undefined:process.env.BROWSER_CHANNEL||(process.platform==='win32'?'chrome':undefined)});t.after(()=>browser.close());const page=await browser.newPage();const errors=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('http://127.0.0.1:'+f.service.server.address().port);await page.getByRole('button',{name:'检查并恢复',exact:true}).click();
   await page.locator('#recover-dialog').waitFor({state:'visible'});assert.match(await page.locator('#recover-reply').textContent(),/onerror/);assert.equal(await page.evaluate(()=>window.injected),undefined);
   await page.getByLabel('完整进度摘要',{exact:true}).fill('已完成第一步，准备继续');await page.getByLabel('续做指令',{exact:true}).fill('继续第二步');await page.locator('#recover-paused').check();
@@ -208,6 +221,11 @@ test('输入框 Enter 没有提交成功，只尝试一次且不能把旧回复�
   const f=await domSession(t,'<div data-message-item data-message-role="assistant">旧回复</div><div data-hatch-composer-root><textarea></textarea></div><script>window.presses=0;document.querySelector("textarea").onkeydown=e=>{if(e.key==="Enter"){e.preventDefault();window.presses++;}};</script>');
   let submissions=0;await assert.rejects(f.session.turn('任务',{onSubmit:async()=>{submissions++;}}),/完整回复/);
   assert.equal(submissions,1);assert.equal(await f.page.evaluate(()=>window.presses),1);
+});
+
+test('旧对话延迟加载时不能冒充刚提交的回复',async t=>{
+  const f=await domSession(t,'<div id="messages"></div><div data-hatch-composer-root><textarea></textarea></div><script>setTimeout(()=>{const old=document.createElement("div");old.setAttribute("data-message-item","");old.setAttribute("data-message-role","assistant");old.textContent="旧对话的回复";document.querySelector("#messages").append(old)},30);document.querySelector("textarea").onkeydown=e=>{if(e.key==="Enter")e.preventDefault()};</script>',{timeoutMs:180});
+  await assert.rejects(f.session.turn('新任务'),/完整回复/);
 });
 
 test('确认窗口、重复可见输入框均停止自动发送',async t=>{

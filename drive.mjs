@@ -1,14 +1,33 @@
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { GoogleAuth } from 'google-auth-library';
+import { ProxyAgent, fetch as proxyFetch } from 'undici';
 
 export class DriveStore {
-  constructor({ env = process.env, fetcher = fetch } = {}) { this.env = env; this.fetcher = fetcher; }
+  constructor({ env = process.env, fetcher } = {}) {
+    this.env = env;
+    if (fetcher) this.fetcher = fetcher;
+    else if (env.DRIVE_PROXY_URL) {
+      let url;
+      try { url = new URL(env.DRIVE_PROXY_URL); } catch { throw new Error('Drive 代理地址格式无效。'); }
+      if (!['http:', 'https:'].includes(url.protocol) || !url.hostname)
+        throw new Error('Drive 代理需要 HTTP 或 HTTPS 地址。');
+      this.proxyAgent = new ProxyAgent(url.toString());
+      this.fetcher = (target, options) => proxyFetch(target, { ...options, dispatcher: this.proxyAgent });
+    } else this.fetcher = fetch;
+  }
   credentialFile() { const path=this.env.DRIVE_CREDENTIALS_FILE||this.env.GOOGLE_APPLICATION_CREDENTIALS;return path&&existsSync(path)?path:null; }
   oauthConfigured() { return ['DRIVE_OAUTH_CLIENT_ID','DRIVE_OAUTH_CLIENT_SECRET','DRIVE_OAUTH_REFRESH_TOKEN'].every(k=>this.env[k]); }
   configured() { return this.oauthConfigured()||!!this.credentialFile(); }
   async request(url, options = {}) {
-    const response = await this.fetcher(url, { ...options, signal: AbortSignal.timeout(30000) });
+    let response;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try { response = await this.fetcher(url, { ...options, signal: AbortSignal.timeout(30000) }); break; }
+      catch (error) {
+        if ((options.method || 'GET').toUpperCase() !== 'GET' || attempt) throw error;
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+    }
     if (!response.ok) throw new Error(`Google Drive 请求失败（HTTP ${response.status}）；请检查授权、目录权限和网络。`);
     return response;
   }
@@ -36,6 +55,38 @@ export class DriveStore {
     const r=await this.api('/drive/v3/files/'+encodeURIComponent(id)+'?fields=id,mimeType,capabilities(canAddChildren)&supportsAllDrives=true');
     const folder=await r.json();
     if(folder.mimeType!=='application/vnd.google-apps.folder'||!folder.capabilities?.canAddChildren)throw new Error('该网盘目录不存在或没有写入权限。');
+  }
+  async importTextFiles(folder) {
+    const response = await this.api('/drive/v3/files?'+new URLSearchParams({
+      q:`'${folder}' in parents and trashed = false`,
+      fields:'nextPageToken,files(id,name,size,appProperties)',
+      pageSize:'100',spaces:'drive',supportsAllDrives:'true',includeItemsFromAllDrives:'true',
+    }));
+    const listing = await response.json();
+    if (listing.nextPageToken) throw new Error('网盘目录超过 100 个文件；请缩小每日读取目录。');
+    const files = (listing.files || []).filter(f => /\.(txt|md|json)$/i.test(f.name || '') && !f.appProperties?.muse_pool_key);
+    if (files.length > 20) throw new Error('每日读取最多支持 20 个文本文件。');
+    const documents = [];
+    let total = 0;
+    for (const source of files.sort((a,b) => a.name.localeCompare(b.name))) {
+      if (Number(source.size) > 20000) throw new Error(`文件 ${source.name} 超过 20 KiB 读取限制。`);
+      const response = await this.api('/drive/v3/files/'+encodeURIComponent(source.id)+'?alt=media&supportsAllDrives=true');
+      const chunks = []; let size = 0;
+      for await (const chunk of response.body) {
+        size += chunk.length;
+        if (size > 20000) { await response.body.cancel().catch(()=>{}); throw new Error(`文件 ${source.name} 超过 20 KiB 读取限制。`); }
+        chunks.push(Buffer.from(chunk));
+      }
+      let content;
+      try { content = new TextDecoder('utf-8', {fatal:true}).decode(Buffer.concat(chunks)); }
+      catch { throw new Error(`文件 ${source.name} 不是 UTF-8 文本。`); }
+      total += content.length;
+      if (total > 50000) throw new Error('每日读取内容总量超过 50000 字符。');
+      const normalized = JSON.stringify({schema_version:1,title:source.name,content,source_id:source.id});
+      const file = await this.put(folder,'source-'+source.id,normalized);
+      documents.push({id:'source-'+source.id,title:source.name,file});
+    }
+    return documents;
   }
   async get(file) {
     if (!file || typeof file.id !== 'string' || !file.id || !/^[a-f0-9]{64}$/.test(file.sha256 || ''))

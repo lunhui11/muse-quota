@@ -45,8 +45,7 @@ export function createMuseAdapter({launch=launchAccount,quotaReader=readQuotaPag
             const editor=editors[0];
             const draft=await editor.evaluate(el=>'value' in el?el.value:el.innerText);
             if(draft.trim())throw failure('COMPOSER_ERROR','Muse 输入框有未发送的草稿，请先在官网处理，避免覆盖。');
-            const beforeUsers=await page.locator(MUSE_SELECTORS.user).count();
-            const beforeReplies=await page.locator(MUSE_SELECTORS.assistant).count();
+            const marker=prompt.match(/"nonce":"([^"]+)"/)?.[1]||prompt.trim().slice(0,80);
             await editor.fill(prompt,{timeout:10000});
             const filled=await editor.evaluate(el=>'value' in el?el.value:el.innerText);
             if(filled.replace(/\r\n/g,'\n')!==prompt)
@@ -67,11 +66,10 @@ export function createMuseAdapter({launch=launchAccount,quotaReader=readQuotaPag
                 throw failure('APPROVAL_REQUIRED','Muse 等待人工确认；任务已暂停自动续做，请到官网检查。');
               if((await visible(page.locator(MUSE_SELECTORS.error))).length)
                 throw failure('MUSE_ERROR','Muse 返回执行错误；请查看官网与最近回复。');
-              const users=page.locator(MUSE_SELECTORS.user);
-              const replies=page.locator(MUSE_SELECTORS.assistant);
-              const sent=await users.count()>beforeUsers;
-              const hasReply=await replies.count()>beforeReplies;
-              const text=hasReply?(await replies.last().innerText()).trim():'';
+              const messages=await page.locator('[data-message-item]').evaluateAll(elements=>elements.map(el=>({role:el.getAttribute('data-message-role'),text:el.innerText})));
+              const sentAt=messages.findLastIndex(item=>item.role==='user'&&item.text.includes(marker));
+              const sent=sentAt>=0;
+              const text=sent?messages.slice(sentAt+1).filter(item=>item.role==='assistant').map(item=>item.text.trim()).filter(Boolean).join('\n\n'):'';
               if(text.length>1048576)throw failure('MUSE_REPLY_TOO_LARGE','Muse 回复超过 1 MiB，请在官网整理成果后恢复。');
               if(text!==last){last=text;stableAt=Date.now();}
               const busy=(await visible(page.locator(MUSE_SELECTORS.stop))).length>0;

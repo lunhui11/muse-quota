@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "google-auth-library": "10.5.0",
-    "playwright": "1.62.1"
+    "playwright": "1.62.1",
+    "undici": "6.29.0"
   }
 }

@@ -94,7 +94,8 @@ export async function launchAccount(account, profileDir, headless = true, browse
   await mkdir(profileDir, { recursive: true, mode: 0o700 });
   const context = await browserType.launchPersistentContext(profileDir, {
     headless, proxy, timeout: 45000,
-    channel: process.env.BROWSER_CHANNEL || (process.platform === 'win32' ? 'chrome' : undefined),
+    executablePath: process.env.BROWSER_EXECUTABLE_PATH || undefined,
+    channel: process.env.BROWSER_EXECUTABLE_PATH ? undefined : process.env.BROWSER_CHANNEL || (process.platform === 'win32' ? 'chrome' : undefined),
   });
   activeContexts.add(context);
   context.on('close', () => activeContexts.delete(context));
