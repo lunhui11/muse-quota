@@ -99,3 +99,5 @@
 已增加 `scripts/configure_github_ssh.py`：通过官方 API 检查管理员权限，创建 main 分支限定及所有者审批的维护环境，设置非敏感连接变量，重新读取验证；仅列 SSH Secret 名称，不读取或上传私钥，不派发工作流，不操作服务器。已有环境保护不覆盖，网络/权限/缺少密钥状态保留 pending。
 
 本地 `python3 -m unittest discover -s scripts -p 'test_*.py' -v` 实测 31 项通过。凭据模式扫描和 `git diff --check` 通过。已在云环境配置草稿添加 `api.github.com`，保留 Google 域名；保存不等于实例策略生效。真实 GitHub 管理 API、GitHub-hosted runner SSH 和服务器检查均 pending，未重启服务或启动执行器。
+
+后续真实操作：维护分支 `codex/github-ssh-maintenance-20261010` 首次提交 `b7d7087` 推送成功，已创建草稿 PR https://github.com/lunhui11/muse-quota/pull/1。GitHub API 仓库读取成功；配置检查确认维护环境缺失。尝试创建环境返回 HTTP 403，重新 GET 确认仍未创建；读取 SSH Secret 名称也返回 HTTP 403，存在性未知。已保存安全 `GH_TOKEN` 需求供用户在云环境配置中填写；未提供令牌，不假设管理员 API 写权限成功。main 保持 `fb5064a`，真实 SSH 和服务验收 pending。

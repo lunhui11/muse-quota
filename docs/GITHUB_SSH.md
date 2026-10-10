@@ -59,7 +59,9 @@ python3 scripts/configure_github_ssh.py --config /安全的本地目录/github-s
 
 常见失败是没有配置 SSH Secret、指纹不匹配、SSH 认证失败、服务器网络/安全组拒绝、环境审批未完成，或工作流尚未提交 main。GitHub 托管执行机来源不同于 Muse；检查现有 SSH 访问规则，不清空防火墙，也不公开管理 API。
 
-当前工作区对 GitHub REST API 的请求被代理策略 403 拒绝，无法据此读取已有工作流或 secrets 名称。源码 Git 读取成功并不代表 Actions API 的读取/触发权限；该能力和实机 SSH 都需要分别验证。
+2026-10-10 的最新实际检查中，源码 Git 读写、仓库元数据读取和草稿 PR 创建成功；创建维护环境及读取 Actions Secret 名称返回 HTTP 403。重新查询确认维护环境尚未创建，旧 SSH Secret 是否存在未知。Git/PR 权限不代表环境、Secret 或 Actions 管理权限，不能将先前网络拒绝误报为当前所有 API 不通。
+
+需要补充 API 权限时，在云环境的安全 Secret 设置填写 `GH_TOKEN`，通过已允许的 `api.github.com` 注入认证；不要在源码、本地 JSON 或聊天中粘贴令牌。可在 GitHub **Settings → Developer settings → Personal access tokens → Fine-grained tokens** 创建仅限此仓库的短期令牌，给予环境配置读写、Secret 元数据读取及之后手动 Actions 所需权限。保存生效后先重复只读检查，再继续配置。私钥仍留在 GitHub Actions Secret，API 令牌和 SSH 密钥是两个不同的凭据。
 
 ## 开发验证
 
