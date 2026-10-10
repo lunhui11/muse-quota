@@ -9,6 +9,7 @@ import { createPool } from './pool.mjs';
 import { DriveStore } from './drive.mjs';
 import { createExecutor } from './executor.mjs';
 import { createMuseAdapter } from './muse.mjs';
+import { inspectDeployment } from './deployment.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 try { await access(join(ROOT, '.env')); loadEnvFile(join(ROOT, '.env')); } catch (e) {
@@ -37,6 +38,7 @@ export function quotaView(account, snapshot, { now = Date.now(), intervalMinutes
   };
 }
 export async function createService(options = {}) {
+  const deployment = await inspectDeployment(ROOT);
   const dataDir = resolve(options.dataDir || process.env.DATA_DIR || join(ROOT, 'data'));
   const intervalMinutes = Number(options.intervalMinutes ?? process.env.PROBE_INTERVAL_MINUTES ?? 30);
   const threshold = Number(options.threshold ?? process.env.PAUSE_AT_PERCENT ?? 90);
@@ -176,6 +178,9 @@ export async function createService(options = {}) {
         respond(res, 200, { service: 'muse-quota-probe', status: stopped ? 'stopping' : 'ready' }); return;
       }
       if (!url.pathname.startsWith('/api/')) { respond(res, 404, { error: '路径不存在。' }); return; }
+      if (url.pathname === '/api/deployment' && req.method === 'GET') {
+        respond(res, 200, { ...deployment, executor_enabled: executor.view().enabled }); return;
+      }
       if(url.pathname==='/api/executor'&&req.method==='GET'){respond(res,200,executor.view());return;}
       const report=url.pathname.match(/^\/api\/executor\/tasks\/([a-f0-9]{12})$/);
       if(report&&req.method==='GET'){respond(res,200,await executor.report(report[1]));return;}
