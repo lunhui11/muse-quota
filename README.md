@@ -85,6 +85,8 @@ MUSE_A_PROXY_PASSWORD=你的代理密码
 
 需要 Linux、Docker Engine 和 Docker Compose。Playwright 依赖和浏览器镜像都固定在 1.62.1。
 
+这是服务代码的部署入口，不是免配置的一键成品：新环境还需要准备私有 `.env`、Muse 官方登录、Google Drive OAuth 与目录授权，以及微信扫码登记。无头 Linux 首次登录还需自行准备受保护的图形桌面；本项目不会替你安装或公开远程桌面服务。云服务器部署前先读下方“云端首次登录”和 [实机联调交接记录](docs/LIVE_HANDOFF_2026-10-10.md)。
+
 ~~~bash
 cp .env.example .env
 docker compose up -d --build
@@ -158,7 +160,7 @@ npm test
 
 测试使用两个真实的临时浏览器配置，通过拦截所有网络请求提供本地模拟 Muse 页面。覆盖中英文和小数解析、Cookie 隔离、无密钥访问、代理配置、队列、失败缓存及桌面/手机页面，不访问真实 Muse、不消耗账号额度。
 
-当前改动已完成本地模拟验证。此前项目记录过真实中文用量页面的人工核验；本轮云环境未完成真实 Muse 登录、Google Drive OAuth 和自动执行联调，不应将历史用量核验视为当前执行器已通过验收。新增名称和备注编辑通过界面、输入校验和数据持久化检查。其他账号仍需登录后对照官网；开发机器没有 Docker，所以没有执行镜像构建或容器运行验证。用量页面的菜单或标签变化可能导致 PAGE_CHANGED，此时保留旧读数并显示错误。
+本地模拟测试已完成。开发机器没有 Docker，因此没有在这台电脑构建或运行容器镜像。2026-10-10 云服务器实测情况与未完成项见 [实机联调交接记录](docs/LIVE_HANDOFF_2026-10-10.md)：真实 Muse 额度探测、Google Drive 交接上传/下载校验、微信扫码登记和一条小型任务回传已通过；账号 1→2 的真实跨账号续做、账号 1 的 Muse 内置 Drive 读取、生产微信重复消息重放仍为 pending。用量页面结构变化时，探针保留旧读数并显示错误，不把失败当作 0%。
 
 参考资料：
 - https://github.com/czg86389-hub/muse2api
@@ -167,7 +169,7 @@ npm test
 - https://playwright.dev/docs/network
 - https://playwright.dev/docs/docker
 
-内置自动执行的首次配置、暂停恢复及限制见 [账号池使用说明](docs/account-pool.md)。先以小型文本任务验证网盘和 Muse 回复，再运行需要切号的任务。微信桥接复用 wechat-muse-bridge，默认通过现成适配层直接接入账号池；Side Chat 模式可选 Gadget。最终部署步骤见 [给 Muse 的接手任务](docs/MUSE_HANDOFF.md)，当前没有生成真实登录二维码或完成微信收发测试。
+内置自动执行的首次配置、暂停恢复及限制见 [账号池使用说明](docs/account-pool.md)。先以小型文本任务验证网盘和 Muse 回复，再运行需要切号的任务。微信桥接复用 wechat-muse-bridge，默认通过现成适配层直接接入账号池；Side Chat 模式可选 Gadget。具体实测结果以 [实机联调交接记录](docs/LIVE_HANDOFF_2026-10-10.md) 为准；新环境仍需分别完成账号登录、官方授权与微信扫码，不能仅凭本地测试认定真实服务已验收。
 
 ## 微信与 Muse 接手部署
 
